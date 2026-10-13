@@ -885,6 +885,34 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 		}
 	});
 
+	it("should refer to an opened flat image (PNG) instead of storing it", async function() {
+		let
+			random = mulberry32(12),
+			clock = makeClock(),
+			original = newBlankArtwork(40, 30),
+			driver = new Driver(original, random, clock);
+
+		driver.run(30);
+
+		let
+			fusion = original.fusionLayers(),
+			png = encodePNG(fusion.width, fusion.height, fusion.data, 4),
+			artwork = flatRoundTrip(original, 0),
+			recorder = new CPRecorder(artwork, {clock: clock, sourceUrl: "https://example.com/v1.png", sourceFormat: SOURCE_PNG});
+
+		assert.strictEqual(recorder.startKind, START_REFERENCE);
+		driver = new Driver(artwork, random, clock);
+		driver.run(30);
+
+		let
+			bytes = recorder.getRecording(),
+			player = await replay(bytes, {fetch: () => Promise.resolve(png)});
+
+		assert.strictEqual(parseRecording(bytes).sessions[0].snapshot, null);
+		assert.deepStrictEqual(player.drift, []);
+		assertSameDocument(player.artwork, artwork, "after a PNG reference session");
+	});
+
 	it("should start over with a snapshot when the drawing doesn't match a non-blank start", async function() {
 		let
 			random = mulberry32(7),
