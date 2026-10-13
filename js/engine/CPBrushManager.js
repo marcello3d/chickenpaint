@@ -21,6 +21,7 @@
 */
 
 import CPBrushInfo from "./CPBrushInfo.js";
+import {sin, cos} from "../util/CPMath.js";
 
 const
     MAX_SQUEEZE = 10;
@@ -38,8 +39,8 @@ function buildBrush(brush, brushInfo) {
         sqrRadius = (brushInfo.curSize / 2) * (brushInfo.curSize / 2),
 
         xFactor = 1.0 + brushInfo.curSqueeze * MAX_SQUEEZE,
-        cosA = Math.cos(brushInfo.curAngle),
-        sinA = Math.sin(brushInfo.curAngle),
+        cosA = cos(brushInfo.curAngle),
+        sinA = sin(brushInfo.curAngle),
 
         offset = 0;
 
@@ -76,8 +77,8 @@ function buildBrushAA(brush, brushInfo) {
         sqrRadiusOuter = ((brushInfo.curSize + 2) / 2) * ((brushInfo.curSize + 2) / 2),
 
         xFactor = 1.0 + brushInfo.curSqueeze * MAX_SQUEEZE,
-        cosA = Math.cos(brushInfo.curAngle),
-        sinA = Math.sin(brushInfo.curAngle),
+        cosA = cos(brushInfo.curAngle),
+        sinA = sin(brushInfo.curAngle),
 
         offset = 0;
 
@@ -127,12 +128,12 @@ function buildBrushSquare(brush, brushInfo) {
         intSize = Math.ceil(brushInfo.curSize),
         center = intSize / 2.0,
 
-        size = brushInfo.curSize * Math.sin(Math.PI / 4),
+        size = brushInfo.curSize * sin(Math.PI / 4),
         sizeX = (size / 2) / (1.0 + brushInfo.curSqueeze * MAX_SQUEEZE),
         sizeY = (size / 2),
 
-        cosA = Math.cos(brushInfo.curAngle),
-        sinA = Math.sin(brushInfo.curAngle),
+        cosA = cos(brushInfo.curAngle),
+        sinA = sin(brushInfo.curAngle),
 
         offset = 0;
 
@@ -162,7 +163,7 @@ function buildBrushSquareAA(brush, brushInfo) {
         intSize = Math.ceil(brushInfo.curSize),
         center = intSize / 2.0,
 
-        size = brushInfo.curSize * Math.sin(Math.PI / 4),
+        size = brushInfo.curSize * sin(Math.PI / 4),
         sizeX = (size / 2) / (1.0 + brushInfo.curSqueeze * MAX_SQUEEZE),
         sizeY = (size / 2),
 
@@ -172,8 +173,8 @@ function buildBrushSquareAA(brush, brushInfo) {
         sizeXOuter = sizeX + 1,
         sizeYOuter = sizeY + 1,
 
-        cosA = Math.cos(brushInfo.curAngle),
-        sinA = Math.sin(brushInfo.curAngle),
+        cosA = cos(brushInfo.curAngle),
+        sinA = sin(brushInfo.curAngle),
 
         offset = 0;
 
@@ -223,8 +224,8 @@ function buildBrushSoft(brush, brushInfo) {
         sqrRadius = (brushInfo.curSize / 2) * (brushInfo.curSize / 2),
 
         xFactor = 1.0 + brushInfo.curSqueeze * MAX_SQUEEZE,
-        cosA = Math.cos(brushInfo.curAngle),
-        sinA = Math.sin(brushInfo.curAngle),
+        cosA = cos(brushInfo.curAngle),
+        sinA = sin(brushInfo.curAngle),
 
         offset = 0;
 

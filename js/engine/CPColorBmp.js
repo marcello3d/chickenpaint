@@ -918,8 +918,11 @@ CPColorBmp.prototype.copyRegionVFlip = function(rect, source) {
 
 /**
  * @param {CPRect} rect
+ * @param {function():number} [random] - Source of random numbers in [0, 1), defaults to Math.random
  */
-CPColorBmp.prototype.fillWithNoise = function(rect) {
+CPColorBmp.prototype.fillWithNoise = function(rect, random) {
+    random = random || Math.random;
+
     rect = this.getBounds().clipTo(rect);
 
     var
@@ -930,7 +933,7 @@ CPColorBmp.prototype.fillWithNoise = function(rect) {
 
     for (var y = rect.top; y < rect.bottom; y++, pixIndex += yStride) {
         for (var x = rect.left; x < rect.right; x++, pixIndex += CPColorBmp.BYTES_PER_PIXEL) {
-            value = (Math.random() * 0x100) | 0;
+            value = (random() * 0x100) | 0;
 
             this.data[pixIndex + CPColorBmp.RED_BYTE_OFFSET] = value;
             this.data[pixIndex + CPColorBmp.GREEN_BYTE_OFFSET] = value;
@@ -1279,8 +1282,11 @@ CPColorBmp.prototype.gradient = function(rect, fromX, fromY, toX, toY, gradientP
 
 /**
  * @param {CPRect} rect
+ * @param {function():number} [random] - Source of random numbers in [0, 1), defaults to Math.random
  */
-CPColorBmp.prototype.fillWithColorNoise = function(rect) {
+CPColorBmp.prototype.fillWithColorNoise = function(rect, random) {
+    random = random || Math.random;
+
     rect = this.getBounds().clipTo(rect);
 
     var
@@ -1291,7 +1297,7 @@ CPColorBmp.prototype.fillWithColorNoise = function(rect) {
 
     for (var y = rect.top; y < rect.bottom; y++, pixIndex += yStride) {
         for (var x = rect.left; x < rect.right; x++, pixIndex += CPColorBmp.BYTES_PER_PIXEL) {
-            value = (Math.random() * 0x1000000) | 0;
+            value = (random() * 0x1000000) | 0;
 
             this.data[pixIndex + CPColorBmp.RED_BYTE_OFFSET] = (value >> 16) & 0xFF;
             this.data[pixIndex + CPColorBmp.GREEN_BYTE_OFFSET] = (value >> 8) & 0xFF;

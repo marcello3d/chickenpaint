@@ -667,8 +667,11 @@ CPGreyBmp.prototype.offsetOfPixel = function(x, y) {
 
 /**
  * @param {CPRect} rect
+ * @param {function():number} [random] - Source of random numbers in [0, 1), defaults to Math.random
  */
-CPGreyBmp.prototype.fillWithNoise = function(rect) {
+CPGreyBmp.prototype.fillWithNoise = function(rect, random) {
+    random = random || Math.random;
+
     rect = this.getBounds().clipTo(rect);
 
     var
@@ -677,7 +680,7 @@ CPGreyBmp.prototype.fillWithNoise = function(rect) {
 
     for (var y = rect.top; y < rect.bottom; y++, pixIndex += yStride) {
         for (var x = rect.left; x < rect.right; x++, pixIndex++) {
-            this.data[pixIndex] = (Math.random() * 0x100) | 0; // TODO we might usefully support bitmaps > 8 bits/channel here?
+            this.data[pixIndex] = (random() * 0x100) | 0; // TODO we might usefully support bitmaps > 8 bits/channel here?
         }
     }
 };

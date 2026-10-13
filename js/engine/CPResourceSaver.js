@@ -28,6 +28,8 @@ export function binaryStringToByteArray(s) {
  *     artwork - Artwork to send
  *     rotation - Integer [0..3] of the number of 90 degree rotation steps that should be applied to canvas upon opening.
  *     swatches - Array of ARGB integer colors to save as the image swatches (optional)
+ *     recording - Function returning the drawing process recording (Uint8Array) to upload with the drawing, or null
+ *                 (optional). The recording is best-effort: if it fails, the drawing is saved without it.
  */
 export default function CPResourceSaver(options) {
     var
@@ -164,6 +166,21 @@ export default function CPResourceSaver(options) {
                     if (swatchesBlob) {
                         formData.append("swatches", swatchesBlob);
                         swatchesBlob = null;
+                    }
+
+                    if (options.recording) {
+                        let
+                            recording = null;
+
+                        try {
+                            recording = options.recording();
+                        } catch (e) {
+                            console.error(e);
+                        }
+
+                        if (recording) {
+                            formData.append("recording", new Blob([recording], {type: "application/octet-stream"}));
+                        }
                     }
 
 					formData.append("endMarker", marker);
