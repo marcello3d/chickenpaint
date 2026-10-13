@@ -10,8 +10,8 @@ npm ci --ignore-scripts   # or pnpm install --frozen-lockfile
 node scripts/build-2draw.mjs
 ```
 
-This runs `make all min` and writes `dist-2draw/` with only the runtime files (minified JS + source map, CSS, fonts,
-gfx, splash), plus `dist-2draw/VERSION` with the source commit. 2draw.net serves it from `/applet/chickenpaint/`
+This runs `make all min` and writes `dist-2draw/` with only the runtime files (minified JS + source maps of the editor
+and of the timelapse player `chickenpaint-player.min.js`, CSS, fonts, gfx, splash), plus `dist-2draw/VERSION` with the source commit. 2draw.net serves it from `/applet/chickenpaint/`
 (`resourcesRoot`); replace `html/applet/chickenpaint/` there with the contents of `dist-2draw/`.
 
 The toolbar icon PNGs in `resources/gfx/` are committed upstream, so Cairo/ImageMagick are only needed when the
@@ -20,4 +20,6 @@ icon SVGs change (or use `chickenpaint.Dockerfile`).
 ## What's different from upstream
 
 - The save response check accepts leading whitespace before `CHIBIOK`.
+- Drawing recording and timelapse playback (branch `recording`, meant for upstream; see `docs/recording-format.md`).
+  2draw.net stores the uploaded `recording` field as `<entry>-v<version>.chiani`.
 - `scripts/build-2draw.mjs` and this file.
