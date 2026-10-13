@@ -170,6 +170,9 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 
 			flattenedNode.mask = groupNode.mask || flattenedNode.mask;
 
+			// The node's properties now combine those of the layer and the group
+			flattenedNode.flattened = true;
+
 			/* However, make sure that if someone invalidates the group node (i.e. draws on its mask) we invalidate this
 			 * new merged node too.
 			 */
@@ -378,7 +381,11 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 		if (!layerNode
 				|| layerNode.visible != layer.visible || layerNode.alpha != layer.alpha || (layerNode.mask == null) != (layer.getEffectiveMask() == null)
 				|| (layerNode.blendMode == CPBlend.LM_PASSTHROUGH) != (layer.blendMode == CPBlend.LM_PASSTHROUGH)
-				|| propertyName === "clip") {
+				|| propertyName === "clip"
+				// The blend mode of a clipping base is also its clipping group's, so rebuild that
+				|| layerNode.parent && layerNode.parent.clip
+				// The node stands for both a group and its only child, so its blend mode may come from either
+				|| layerNode.flattened) {
 			this.resetTree();
 		} else {
 			layerNode.blendMode = layer.blendMode;
@@ -450,6 +457,73 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 	}
 
 	/**
+	 * Blend the child node onto a fusion which has some transparent pixels within rect.
+	 *
+	 * The blending routines for opaque fusions round differently from the ones for transparent fusions, so we choose
+	 * between them for each pixel (by its opacity) rather than for the whole rect. That way the result doesn't depend on
+	 * the shape of the area being redrawn, so the same document always produces the same fusion (which drawing
+	 * recordings rely on, since the fusion can be baked into layers by "merge all layers" and "copy merged").
+	 *
+	 * @param {CPColorBmp} fusion
+	 * @param {CPBlendNode} childNode
+	 * @param {CPRect} rect
+	 */
+	function fuseOntoPartlyTransparentFusion(fusion, childNode, rect) {
+		let
+			data = fusion.data,
+			width = fusion.width,
+			opaqueRowsTop = -1;
+
+		function fuse(transparent, left, top, right, bottom) {
+			CPBlend.fuseImageOntoImage(fusion, transparent, childNode.image, childNode.alpha, childNode.blendMode,
+				new CPRect(left, top, right, bottom), childNode.mask);
+		}
+
+		for (let y = rect.top; y < rect.bottom; y++) {
+			let
+				rowOffset = y * width * 4 + 3,
+				rowIsOpaque = true;
+
+			for (let x = rect.left; x < rect.right; x++) {
+				if (data[rowOffset + x * 4] !== 255) {
+					rowIsOpaque = false;
+					break;
+				}
+			}
+
+			if (rowIsOpaque) {
+				// Gather runs of opaque rows together
+				if (opaqueRowsTop === -1) {
+					opaqueRowsTop = y;
+				}
+				continue;
+			}
+
+			if (opaqueRowsTop !== -1) {
+				fuse(false, rect.left, opaqueRowsTop, rect.right, y);
+				opaqueRowsTop = -1;
+			}
+
+			// Blend runs of opaque and non-opaque pixels along this row separately
+			let
+				runStart = rect.left,
+				runIsOpaque = data[rowOffset + rect.left * 4] === 255;
+
+			for (let x = rect.left + 1; x <= rect.right; x++) {
+				if (x === rect.right || (data[rowOffset + x * 4] === 255) !== runIsOpaque) {
+					fuse(!runIsOpaque, runStart, y, x, y + 1);
+					runStart = x;
+					runIsOpaque = !runIsOpaque;
+				}
+			}
+		}
+
+		if (opaqueRowsTop !== -1) {
+			fuse(false, rect.left, opaqueRowsTop, rect.right, rect.bottom);
+		}
+	}
+
+	/**
 	 * Blend the given tree node and return the tree node that contains the resulting blend, or null if the tree is empty.
 	 * 
 	 * @param {?CPBlendNode} treeNode
@@ -482,6 +556,11 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 			groupIsEmpty = false;
 
 			copyOpaqueImageRect(treeNode.image, treeNode.parent.image, blendArea);
+		} else if (treeNode.layers.length > 0 && treeNode.layers[0].isGroup && treeNode.layers[0].blendMode == CPBlend.LM_PASSTHROUGH) {
+			/* Our bottom child is a pass-through group, which will copy our fusion as its backdrop. Nothing is beneath
+			 * it, so make that transparent (rather than whatever we blended last time).
+			 */
+			treeNode.image.clearRect(blendArea, 0);
 		}
 
 		// Avoid using an iterator here because Chrome refuses to optimize when a "finally" clause is present (caused by Babel iterator codegen)
@@ -502,7 +581,11 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
                     console.log(`CPBlend.fuseImageOntoImage(treeNode.image, fusionHasTransparency == ${fusionHasTransparency}, childNode.image, childNode.alpha == ${childNode.alpha}, childNode.blendMode == ${childNode.blendMode}, ${blendArea}, ${childNode.mask});`);
                 }
 
-                CPBlend.fuseImageOntoImage(treeNode.image, fusionHasTransparency, childNode.image, childNode.alpha, childNode.blendMode, blendArea, childNode.mask);
+                if (fusionHasTransparency) {
+                    fuseOntoPartlyTransparentFusion(treeNode.image, childNode, blendArea);
+                } else {
+                    CPBlend.fuseImageOntoImage(treeNode.image, false, childNode.image, childNode.alpha, childNode.blendMode, blendArea, childNode.mask);
+                }
             }
         }
 

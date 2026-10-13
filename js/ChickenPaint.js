@@ -41,6 +41,8 @@ import CPBrushInfo from "./engine/CPBrushInfo.js";
 import CPArtwork from "./engine/CPArtwork.js";
 import CPResourceLoader from "./engine/CPResourceLoader.js";
 import CPResourceSaver from "./engine/CPResourceSaver.js";
+import CPRecorder from "./engine/CPRecorder.js";
+import {SOURCE_CHI, SOURCE_PNG} from "./engine/CPRecordingFormat.js";
 
 import CPSplashScreen from "./gui/CPSplashScreen.js";
 
@@ -300,6 +302,14 @@ function createDrawingTools() {
  *
  * @property {boolean} [allowMultipleSends] - Allow the drawing to be sent to the server multiple times (saving does not
  *                                          immediately end drawing session).
+ *
+ * @property {boolean} [recordDrawing]      - Record the drawing process, for timelapse playback with ChickenPaintPlayer.
+ *                                          The recording is uploaded with the drawing as the "recording" field
+ *                                          (see docs/recording-format.md).
+ * @property {string} [loadRecordingUrl]    - URL of the recording of the drawing being loaded, to continue it. If it
+ *                                          can't be loaded, nothing is recorded (rather than starting over).
+ * @property {string} [recordingSourceUrl]  - A permanent URL of the file being loaded (loadChibiFileUrl or loadImageUrl),
+ *                                          which a recording may refer to instead of storing a copy of the layers.
  * @property {boolean} [allowDownload]      - Allow the drawing to be saved to the user's computer
  *
  * @property {"allow"|"auto"|"force"|"disable"} [fullScreenMode] - Control the behaviour of the full screen option:
@@ -348,6 +358,13 @@ export default function ChickenPaint(options) {
          * @type {CPMainGUI}
          */
         mainGUI,
+
+        /**
+         * Records the drawing process when options.recordDrawing is set.
+         *
+         * @type {?CPRecorder}
+         */
+        recorder = null,
 
 	    /**
          *
@@ -1113,6 +1130,44 @@ export default function ChickenPaint(options) {
         return tools[curBrush];
     };
     
+    /**
+     * Get the recording of the drawing process (when the recordDrawing option is on).
+     *
+     * @returns {?Uint8Array} The recording, or null if nothing is being recorded (or it has grown too large)
+     */
+    this.getRecording = function() {
+        if (!recorder) {
+            return null;
+        }
+        try {
+            return recorder.getRecording({rotation: canvas.getRotation90()});
+        } catch (e) {
+            // Recording is best-effort, it mustn't stop the drawing from being saved
+            console.error(e);
+            return null;
+        }
+    };
+
+    function startRecording(previous) {
+        if (!options.recordDrawing) {
+            return;
+        }
+        if (options.loadRecordingUrl && !previous) {
+            // Couldn't load the previous recording, so don't replace it with one that's missing the start
+            return;
+        }
+        try {
+            recorder = new CPRecorder(that.artwork, {
+                previous: previous || null,
+                sourceUrl: options.recordingSourceUrl || "",
+                sourceFormat: options.loadChibiFileUrl ? SOURCE_CHI : SOURCE_PNG
+            });
+        } catch (e) {
+            console.error(e);
+            recorder = null;
+        }
+    }
+
     function saveDrawing() {
         let
             saver = new CPResourceSaver({
@@ -1142,7 +1197,8 @@ export default function ChickenPaint(options) {
                 artwork: that.getArtwork(),
                 rotation: canvas.getRotation90(),
                 swatches: mainGUI.getSwatches(),
-                url: options.saveUrl
+                url: options.saveUrl,
+                recording: recorder ? () => that.getRecording() : null
             }),
             sendDialog = new CPSendDialog(that, uiElem, saver);
 
@@ -1426,6 +1482,8 @@ export default function ChickenPaint(options) {
 
         loader.on("loadingComplete", function(resources) {
             that.artwork = resources.layers || resources.flat;
+
+            startRecording(resources.recording);
             
             startMainGUI(resources.swatches, options.rotation);
             if (options.onLoaded) {
@@ -1441,6 +1499,8 @@ export default function ChickenPaint(options) {
             this.artwork = new CPArtwork(options.canvasWidth || 800, options.canvasHeight || 600);
             this.artwork.addBackgroundLayer();
         }
+
+        startRecording(null);
 
         startMainGUI();
         

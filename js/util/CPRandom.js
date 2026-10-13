@@ -20,10 +20,44 @@
     along with ChickenPaint. If not, see <http://www.gnu.org/licenses/>.
 */
 
-export default function CPRandom() {
-    var 
-        nextNextGaussian, 
+import {log} from "./CPMath.js";
+
+/**
+ * A seedable pseudo-random number generator (mulberry32), so that operations which use randomness (brush scattering,
+ * noise fills) can be replayed exactly by a drawing recording.
+ *
+ * @param {int} [seed] - Initial seed, or omit to seed from Math.random()
+ * @constructor
+ */
+export default function CPRandom(seed) {
+    var
+        state = 0,
+        nextNextGaussian,
         haveNextNextGaussian = false;
+
+    /**
+     * Restart the sequence from the given seed.
+     *
+     * @param {int} seed - 32-bit integer
+     */
+    this.setSeed = function(seed) {
+        state = seed | 0;
+        haveNextNextGaussian = false;
+    };
+
+    /**
+     * @returns {number} A number in the range [0, 1)
+     */
+    this.nextDouble = function() {
+        state = (state + 0x6D2B79F5) | 0;
+
+        var
+            t = Math.imul(state ^ (state >>> 15), 1 | state);
+
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
 
     /**
      * Definition from Java, mean of 0.0 and standard deviation 1.0.
@@ -38,13 +72,13 @@ export default function CPRandom() {
                 v1, v2, s;
             
             do {
-                v1 = 2 * Math.random() - 1; // between -1.0 and 1.0
-                v2 = 2 * Math.random() - 1; // between -1.0 and 1.0
+                v1 = 2 * this.nextDouble() - 1; // between -1.0 and 1.0
+                v2 = 2 * this.nextDouble() - 1; // between -1.0 and 1.0
                 s = v1 * v1 + v2 * v2;
             } while (s >= 1 || s == 0);
             
             var
-                multiplier = Math.sqrt(-2 * Math.log(s) / s);
+                multiplier = Math.sqrt(-2 * log(s) / s);
             
             nextNextGaussian = v2 * multiplier;
             haveNextNextGaussian = true;
@@ -52,4 +86,6 @@ export default function CPRandom() {
             return v1 * multiplier;
         }
     };
-};
+
+    this.setSeed(seed === undefined ? (Math.random() * 0x100000000) | 0 : seed);
+}

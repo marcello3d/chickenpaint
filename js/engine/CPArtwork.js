@@ -793,13 +793,14 @@ export default function CPArtwork(_width, _height) {
 
         if (brushTool.wantsOutputAsInput) {
             mergeStrokeBuffer();
-
-            if (sampleAllLayers && !maskEditingMode) {
-                that.fusionLayers();
-            }
         }
 
         invalidateLayerPaint(curLayer, imageRect);
+
+        if (brushTool.wantsOutputAsInput && sampleAllLayers && !maskEditingMode) {
+            // Update the fusion now that it's been invalidated, so that the next dab can sample this one
+            that.fusionLayers();
+        }
     };
 
     this.getDefaultLayerName = function(isGroup) {
@@ -1243,6 +1244,9 @@ export default function CPArtwork(_width, _height) {
 	function addUndo(undo) {
         that.setHasUnsavedChanges(true);
 
+        // Lets a drawing recorder see the operations that it can't reproduce from their inputs alone
+        that.emitEvent("addUndo", [undo]);
+
         if (redoList.length > 0) {
             redoList = [];
         }
@@ -1428,7 +1432,7 @@ export default function CPArtwork(_width, _height) {
 	        prepareForLayerPaintUndo();
 	        paintUndoArea = r.clone();
 	
-	        target.fillWithNoise(r);
+	        target.fillWithNoise(r, rnd.nextDouble);
 	
 	        addUndo(new CPUndoPaint());
 	        invalidateLayerPaint(curLayer, r);
@@ -1450,7 +1454,7 @@ export default function CPArtwork(_width, _height) {
             prepareForLayerPaintUndo();
             paintUndoArea = r.clone();
 
-            curLayer.image.fillWithColorNoise(r);
+            curLayer.image.fillWithColorNoise(r, rnd.nextDouble);
 
             addUndo(new CPUndoPaint(true, false));
             invalidateLayer(curLayer, r, true, false);
@@ -1709,6 +1713,13 @@ export default function CPArtwork(_width, _height) {
     this.setSampleAllLayers = function(b) {
         sampleAllLayers = b;
     };
+
+    /**
+     * @returns {boolean}
+     */
+    this.getSampleAllLayers = function() {
+        return sampleAllLayers;
+    };
     
     this.getLayerLockAlpha = function() {
         return this.getActiveLayer().getLockAlpha();
@@ -1726,13 +1737,59 @@ export default function CPArtwork(_width, _height) {
     this.setForegroundColor = function(color) {
         curColor = color;
     };
+
+    /**
+     * @returns {int} RGB color
+     */
+    this.getForegroundColor = function() {
+        return curColor;
+    };
     
     this.setBrush = function(brush) {
         curBrush = brush;
     };
+
+    /**
+     * @returns {?CPBrushInfo}
+     */
+    this.getBrush = function() {
+        return curBrush;
+    };
     
     this.setBrushTexture = function(texture) {
         brushManager.setTexture(texture);
+    };
+
+    /**
+     * @returns {?CPGreyBmp}
+     */
+    this.getBrushTexture = function() {
+        return brushManager.texture || null;
+    };
+
+    /**
+     * Restart the random number sequence used by brush scattering and the noise fills, so that a recorded operation
+     * can be replayed exactly.
+     *
+     * @param {int} seed - 32-bit integer
+     */
+    this.setRandomSeed = function(seed) {
+        rnd.setSeed(seed);
+    };
+
+    /**
+     * Replace regions of layer pixels with the given recorded pixels, as one undoable operation. Drawing recordings
+     * use this to replay operations whose results can't be reproduced from their inputs (e.g. free transforms, which
+     * are rendered by the browser's canvas).
+     *
+     * @param {Object[]} changes - Array of {layer: CPLayer, rect: CPRect, image: ?CPColorBmp, mask: ?CPGreyBmp}, where
+     *                             image and mask (if present) hold the new pixels of rect.
+     * @param {CPRect} selection - The selection after the change
+     * @param {CPLayer} layer - Layer to make active
+     * @param {boolean} selectMask - Select the mask of that layer for editing
+     */
+    this.applyRecordedChange = function(changes, selection, layer, selectMask) {
+        addUndo(new CPActionRecordedChange(changes, selection, layer, selectMask));
     };
 	
 	/**
@@ -2960,8 +3017,12 @@ export default function CPArtwork(_width, _height) {
 	                }
 	
 	                if (layerInfo.moveMask) {
+		                /*
+		                 * Compose onto the original mask (as for the image above), not the current one: that still holds the
+		                 * previous amend()'s result, which would make the outcome depend on the amend history (and redo() differ).
+		                 */
 		                composeOntoRects.forEach(rect => {
-			                this.composeCanvasContext.putImageData(layerInfo.layer.mask.getImageData(rect.left, rect.top, rect.getWidth(), rect.getHeight()), rect.left, rect.top);
+			                this.composeCanvasContext.putImageData(layerInfo.maskUndo.getImageData(rect.left, rect.top, rect.getWidth(), rect.getHeight()), rect.left, rect.top);
 		                });
 		
 		                if (this.movingWholeLayer) {
@@ -3354,6 +3415,73 @@ export default function CPArtwork(_width, _height) {
     
     CPActionPaste.prototype = Object.create(CPUndo.prototype);
     CPActionPaste.prototype.constructor = CPActionPaste;
+
+    /**
+     * Replace regions of layers with recorded pixels (see applyRecordedChange()).
+     *
+     * @constructor
+     */
+    function CPActionRecordedChange(changes, selection, layer, selectMask) {
+        const
+            fromSelection = that.getSelection(),
+            toSelection = selection.clone(),
+            fromLayer = curLayer,
+            fromMask = maskEditingMode;
+
+        changes = changes.map(change => {
+            let
+                rect = change.rect.getIntersection(that.getBounds());
+
+            return {
+                layer: change.layer,
+                rect: rect,
+                newImage: change.image,
+                newMask: change.mask,
+                oldImage: change.image ? change.layer.image.cloneRect(rect) : null,
+                oldMask: change.mask ? change.layer.mask.cloneRect(rect) : null
+            };
+        });
+
+        function apply(useNew) {
+            for (let change of changes) {
+                let
+                    image = useNew ? change.newImage : change.oldImage,
+                    mask = useNew ? change.newMask : change.oldMask;
+
+                if (image) {
+                    change.layer.image.copyBitmapRect(image, change.rect.left, change.rect.top, image.getBounds());
+                }
+                if (mask) {
+                    change.layer.mask.copyBitmapRect(mask, change.rect.left, change.rect.top, mask.getBounds());
+                }
+                invalidateLayer(change.layer, change.rect, !!image, !!mask);
+            }
+        }
+
+        this.undo = function() {
+            apply(false);
+            that.setSelection(fromSelection);
+            that.setActiveLayer(fromLayer, fromMask);
+            callListenersSelectionChange();
+        };
+
+        this.redo = function() {
+            apply(true);
+            that.setSelection(toSelection);
+            that.setActiveLayer(layer, selectMask);
+            callListenersSelectionChange();
+        };
+
+        this.getMemoryUsed = function(undone, param) {
+            return changes.map(change => [change.newImage, change.newMask, change.oldImage, change.oldMask]
+                .map(bmp => bmp ? bmp.data.byteLength : 0).reduce(sum, 0)).reduce(sum, 0);
+        };
+
+        this.redo();
+    }
+
+    CPActionRecordedChange.prototype = Object.create(CPUndo.prototype);
+    CPActionRecordedChange.prototype.constructor = CPActionRecordedChange;
 
     paintingModes = [
         CPBrushTool,

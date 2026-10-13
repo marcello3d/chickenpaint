@@ -12,6 +12,7 @@ import EventEmitter from "wolfy87-eventemitter";
  * loadImageURL - URL of PNG/JPEG image to load for editing (optional)
  * loadChibiFileURL - URL of .chi file to load for editing (optional). Used in preference to loadImage.
  * loadSwatchesURL - URL of an .aco palette to load (optional)
+ * loadRecordingUrl - URL of a drawing recording to load (optional, for continuing it)
  */
 export default function CPResourceLoader(options) {
     var
@@ -37,6 +38,15 @@ export default function CPResourceLoader(options) {
         }
     }
     
+    if (options.loadRecordingUrl) {
+        resources.push({
+            url: options.loadRecordingUrl,
+            friendly: "drawing recording",
+            name: "recording",
+            required: false
+        });
+    }
+
     if (options.loadSwatchesUrl) {
         resources.push({
             url: options.loadSwatchesUrl,
@@ -98,6 +108,9 @@ export default function CPResourceLoader(options) {
 
             case "layers":
                 return chiLoad(resourceData);
+
+            case "recording":
+                return Promise.resolve(new Uint8Array(resourceData));
 
             default:
                 return Promise.reject("Unexpected resource type '" + resource.name + "'");
