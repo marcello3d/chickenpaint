@@ -870,6 +870,19 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 		assert.deepStrictEqual(player.drift, []);
 		assertSameDocument(player.artwork, artwork, "after a reference session");
 		assert.strictEqual(parseRecording(bytes).sessions.length, 5);
+
+		// A referenced file that can't be fetched, or that isn't what the editor opened, is reported as drift (so the
+		// page can show the finished picture at the end) and the rest still plays
+		for (let fetchReference of [() => Promise.reject(new Error("404")), () => Promise.resolve(chiBytes)]) {
+			let
+				drifts = [];
+
+			player = await replay(bytes, {fetch: fetchReference, onDrift: drift => drifts.push(drift)});
+			assert.strictEqual(drifts.length, 1);
+			assert.strictEqual(drifts[0].session, 4);
+			assert.strictEqual(drifts[0].at, "start");
+			assert(player.isDone());
+		}
 	});
 
 	it("should start over with a snapshot when the drawing doesn't match a non-blank start", async function() {
