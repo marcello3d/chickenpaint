@@ -156,7 +156,8 @@ varint  canvas width
 varint  canvas height
 varint  wall-clock time the session started, ms since the Unix epoch (0 if unknown)
 u32     start hash: the document hash (see Hashes) of the document the editor started from
-string  source URL ("" if none): the file the editor opened, for start kind 3, and as a fallback for kinds 1 and 2
+string  source URL ("" if none): the file the editor opened. Required for start kind 3; other kinds may carry it
+        too, for information (the player only fetches it for kind 3)
 u8      source format: 0 = image (PNG), 1 = ChickenPaint layers file (.chi)
 varint  number of layers in the root group
 varint  number of layer table entries
@@ -318,7 +319,9 @@ session is never continued.
 
 The player then sets every layer's properties from the layer table, makes the given layer active, sets the selection,
 and starts with an empty undo history, clipboard and brush texture. If the starting document's hash doesn't match the
-start hash, it falls back to the snapshot or the source file (if there is one) and reports drift.
+start hash, it reports drift and carries on (after building the starting document from the snapshot or the source file,
+for kinds 3 and 4). A source file that can't be fetched is also reported as drift, and the session then starts from a
+blank canvas. A host that passes `recordingSourceUrl` must keep that file for as long as the recording.
 
 #### `SEND` session end
 
