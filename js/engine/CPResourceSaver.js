@@ -69,7 +69,7 @@ export default function CPResourceSaver(options) {
         xhr.addEventListener("load", function(evt) {
             reportProgress(1.0);
             
-            if (this.status == 200 && /^CHIBIOK/.test(this.response)) {
+            if (this.status == 200 && /^\s*CHIBIOK/.test(this.response)) {
                 that.emitEvent("savingComplete");
             } else {
                 reportFatal(this.response);
