@@ -32,6 +32,7 @@ import CPClip from "../js/engine/CPClip.js";
 import CPBlend from "../js/engine/CPBlend.js";
 import CPRecorder from "../js/engine/CPRecorder.js";
 import CPRecordingPlayer from "../js/engine/CPRecordingPlayer.js";
+import CPPlaybackLoop from "../js/player/CPPlaybackLoop.js";
 import {save as chiSave, load as chiLoad} from "../js/engine/CPChibiFile.js";
 import {
 	parseRecording, decodeEvents, layerList, rotateRGBA, hashImage, hashLayers, buildLayersFromTable, getLayerTable, layerBitmaps,
@@ -916,6 +917,76 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 					assert.strictEqual(describeState(player), describeState(straight), "seed " + seed + " budget " + keyframeMemory + " seek to " + time);
 				}
 			}
+		}
+	});
+
+	it("should only draw frames at the playback time onto the player's canvas, never one on the way to a seek", async function() {
+		this.timeout(20000);
+
+		for (let seed = 1; seed <= 3; seed++) {
+			let
+				random = mulberry32(seed + 900),
+				clock = makeClock(),
+				artwork = newBlankArtwork(50, 40),
+				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+				driver = new Driver(artwork, random, clock);
+
+			driver.run(120);
+
+			let
+				bytes = recorder.getRecording(),
+				loop = null,
+				pixels = new Uint8ClampedArray(50 * 40 * 4),
+				drawnWhileSeeking = 0,
+				context = {
+					putImageData(imageData, x, y, dx, dy, dw, dh) {
+						if (loop.seeking) {
+							drawnWhileSeeking++;
+						}
+						for (let row = dy; row < dy + dh; row++) {
+							let
+								offset = (row * imageData.width + dx) * 4;
+
+							pixels.set(imageData.data.subarray(offset, offset + dw * 4), (row * 50 + dx) * 4);
+						}
+					}
+				},
+				canvas = {width: 0, height: 0, getContext: () => context},
+				reports = [];
+
+			loop = new CPPlaybackLoop(canvas, {speed: 256, keyframeMemory: 1 << 20, onTimeUpdate: info => reports.push(info)});
+			await loop.load(bytes);
+
+			let
+				settle = () => new Promise(resolve => {
+					let
+						poll = () => loop.seeking || loop.isPlaying ? setTimeout(poll, 1) : resolve();
+
+					poll();
+				});
+
+			loop.play();
+			await settle();
+
+			for (let i = 0; i < 8; i++) {
+				let
+					time = Math.floor(random() * (loop.duration + 1)),
+					straight = new CPRecordingPlayer(bytes, {keyframeInterval: 0});
+
+				reports.length = 0;
+				loop.seek(time);
+				assert(loop.seeking, "seeking until the replay gets there");
+				await settle();
+				assert.strictEqual(reports[0].seeking, true);
+				assert.strictEqual(reports[reports.length - 1].seeking, false, "a report when the seek lands");
+
+				await straight.prepare();
+				straight.advanceTo(time);
+				assert(Buffer.from(pixels).equals(Buffer.from(straight.artwork.fusionLayers().data)),
+					"seed " + seed + ": the canvas shows the drawing at " + time);
+			}
+			loop.destroy();
+			assert.strictEqual(drawnWhileSeeking, 0);
 		}
 	});
 

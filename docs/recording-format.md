@@ -53,7 +53,7 @@ let player = new ChickenPaintPlayer({
     speed: 1,                                    // playback rate multiplier
     controls: true,                              // a play button and a seek bar
     maxIdle: 500,                                // pauses longer than this (ms) are shortened to it
-    onTimeUpdate: info => {},                    // {currentTime, duration, isPlaying, progress}
+    onTimeUpdate: info => {},                    // {currentTime, duration, isPlaying, progress, seeking}
     onEnd: () => {},
     onError: error => {},
     onDrift: drift => {},                        // the replay doesn't match the recorded drawing (see Hashes)
@@ -66,6 +66,7 @@ player.ready;        // Promise, resolves once loaded
 player.duration;     // ms
 player.currentTime;  // ms
 player.isPlaying;
+player.seeking;      // a seek is still replaying its way to the target
 player.play(); player.pause(); player.seek(ms); player.setSpeed(rate); player.destroy();
 ```
 
@@ -78,7 +79,8 @@ Where the browser has `OffscreenCanvas` (not Safari before 16.4), the replay run
 onto the player's canvas, so the page stays responsive however much there is to replay (seeking, high speeds). If the
 worker can't start, the player replays on the page. Either way, seeking restores the nearest of the keyframes (copies
 of the replay kept in memory) taken during playback; how much memory they may use depends on the device
-(`ChickenPaintPlayer.defaultKeyframeMemory()`: less on phones).
+(`ChickenPaintPlayer.defaultKeyframeMemory()`: less on phones). The canvas only ever shows a frame at the playback
+time: while a seek replays its way to the target (`seeking`), it keeps the frame from before the seek.
 
 ## How recording works
 

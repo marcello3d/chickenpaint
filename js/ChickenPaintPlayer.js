@@ -107,7 +107,7 @@ function supportsWorkerPlayback() {
  * @param {number} [options.speed] - Playback rate multiplier (default 1)
  * @param {boolean} [options.controls] - Show a play button and a seek bar
  * @param {number} [options.maxIdle] - Pauses in the recording longer than this many ms are shortened (default 500)
- * @param {function(Object)} [options.onTimeUpdate] - Called with {currentTime, duration, isPlaying, progress}
+ * @param {function(Object)} [options.onTimeUpdate] - Called with {currentTime, duration, isPlaying, progress, seeking}
  * @param {function(Error)} [options.onError]
  * @param {function()} [options.onEnd]
  * @param {function(Object)} [options.onDrift] - Called (once) if the replay doesn't match the recorded drawing
@@ -121,6 +121,8 @@ function supportsWorkerPlayback() {
  * @property {number} duration - Playback length in ms
  * @property {number} currentTime - Position in ms
  * @property {boolean} isPlaying
+ * @property {boolean} seeking - A seek is on its way to its target. Meanwhile the canvas keeps showing the frame from
+ *                               before it (double buffering); onTimeUpdate reports when it lands.
  *
  * @constructor
  */
@@ -187,7 +189,8 @@ export default function ChickenPaintPlayer(options) {
     Object.defineProperties(this, {
         duration: {get: () => engine ? engine.duration : 0},
         currentTime: {get: () => engine ? engine.currentTime : pendingSeek || 0},
-        isPlaying: {get: () => engine ? engine.isPlaying : pendingPlay}
+        isPlaying: {get: () => engine ? engine.isPlaying : pendingPlay},
+        seeking: {get: () => engine ? engine.seeking : pendingSeek !== null}
     });
 
     /**

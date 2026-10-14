@@ -39,6 +39,10 @@ export default function CPPlaybackWorkerClient(canvas, workerUrl, options) {
         duration = 0,
         time = 0,
         playing = false,
+        /**
+         * A seek is on its way to its target (the canvas still shows the frame from before it)
+         */
+        seeking = false,
         ready = false,
         destroyed = false,
         /**
@@ -49,7 +53,8 @@ export default function CPPlaybackWorkerClient(canvas, workerUrl, options) {
     Object.defineProperties(this, {
         duration: {get: () => duration},
         currentTime: {get: () => time},
-        isPlaying: {get: () => playing}
+        isPlaying: {get: () => playing},
+        seeking: {get: () => seeking}
     });
 
     function send(message, transfer) {
@@ -96,6 +101,7 @@ export default function CPPlaybackWorkerClient(canvas, workerUrl, options) {
                         time = message.info.currentTime;
                         duration = message.info.duration;
                         playing = message.info.isPlaying;
+                        seeking = !!message.info.seeking;
                         if (options.onTimeUpdate) {
                             options.onTimeUpdate(message.info);
                         }
@@ -177,6 +183,7 @@ export default function CPPlaybackWorkerClient(canvas, workerUrl, options) {
 
     this.seek = function(ms) {
         time = Math.max(0, Math.min(duration, Number(ms) || 0));
+        seeking = true;
         send({type: "seek", ms: time});
     };
 
