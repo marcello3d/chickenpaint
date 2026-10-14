@@ -26,6 +26,8 @@ copy("resources/js/chickenpaint.min.js", "js/chickenpaint.min.js");
 copy("resources/js/chickenpaint.min.js.map", "js/chickenpaint.min.js.map");
 copy("resources/js/chickenpaint-player.min.js", "js/chickenpaint-player.min.js");
 copy("resources/js/chickenpaint-player.min.js.map", "js/chickenpaint-player.min.js.map");
+copy("resources/js/chickenpaint-player-worker.min.js", "js/chickenpaint-player-worker.min.js");
+copy("resources/js/chickenpaint-player-worker.min.js.map", "js/chickenpaint-player-worker.min.js.map");
 copy("resources/css/chickenpaint.css", "css/chickenpaint.css");
 copyDir("resources/fonts", (n) => /\.(eot|svg|ttf|woff2?)$/.test(n));
 copyDir("resources/gfx", (n) => n.endsWith(".png"));

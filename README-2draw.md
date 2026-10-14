@@ -11,7 +11,8 @@ node scripts/build-2draw.mjs
 ```
 
 This runs `make all min` and writes `dist-2draw/` with only the runtime files (minified JS + source maps of the editor
-and of the timelapse player `chickenpaint-player.min.js`, CSS, fonts, gfx, splash), plus `dist-2draw/VERSION` with the source commit. 2draw.net serves it from `/applet/chickenpaint/`
+and of the timelapse player `chickenpaint-player.min.js` and its worker `chickenpaint-player-worker.min.js`, which it
+loads from the same directory, CSS, fonts, gfx, splash), plus `dist-2draw/VERSION` with the source commit. 2draw.net serves it from `/applet/chickenpaint/`
 (`resourcesRoot`); replace `html/applet/chickenpaint/` there with the contents of `dist-2draw/`.
 
 The toolbar icon PNGs in `resources/gfx/` are committed upstream, so Cairo/ImageMagick are only needed when the
