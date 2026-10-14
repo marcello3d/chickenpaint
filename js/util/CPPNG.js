@@ -136,7 +136,7 @@ export function encodePNG(width, height, data, channels) {
     return concatBytes([
         PNG_SIGNATURE,
         chunk("IHDR", header),
-        chunk("IDAT", pako.deflate(raw, {level: 9})),
+        chunk("IDAT", pako.deflate(raw, {level: 6})), // level 9 is ~5-8x slower on large images for ~5% smaller files
         chunk("IEND", new Uint8Array(0))
     ]);
 }
