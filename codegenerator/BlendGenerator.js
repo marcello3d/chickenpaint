@@ -1122,6 +1122,104 @@ CPBlend.${functionName} = function(${parameters.map(p => p.name).join(", ")}) {
 	return result;
 }
 
+/**
+ * Make a blending routine for a fusion which may have both opaque and transparent pixels: each pixel is blended with
+ * the operation's ontoOpaque kernel if its fusion alpha is 255, and with the ontoTransparent kernel otherwise. This
+ * gives exactly the same result as splitting the area into runs of opaque and non-opaque pixels and blending each run
+ * with the matching opaque/transparent routine, without scanning for the runs first.
+ */
+function makeMixedBlendOperation(functionName, operation, variant) {
+	let
+		parameters = [
+			{name: "fusion", type: "CPColorBmp"},
+			{name: "layer", type: "CPColorBmp"},
+			{name: "layerAlpha", type: "int"},
+			{name: "srcRect", type: "CPRect"}
+		],
+		outerVars = {
+			h: "srcRect.getHeight() | 0",
+			w: "srcRect.getWidth() | 0",
+			yStride: "((layer.width - w) * BYTES_PER_PIXEL) | 0",
+			pixIndex: "layer.offsetOfPixel(srcRect.left, srcRect.top) | 0",
+			fusionData: "fusion.data"
+		},
+		innerVars = {
+			alpha1: getLayerAlphaExpressionForVariant("layer.data[pixIndex + ALPHA_BYTE_OFFSET]", operation, variant),
+			alpha2: null
+		},
+		opaqueKernel = getFunctionBody(operation.ontoOpaque),
+		transparentKernel = getFunctionBody(operation.ontoTransparent);
+
+	if (variant.masked) {
+		parameters.push({name: "mask", type: "CPGreyBmp"});
+		outerVars.yStrideMask = "(mask.width - w) | 0";
+		outerVars.maskIndex = "mask.offsetOfPixel(srcRect.left, srcRect.top) | 0";
+	}
+
+	if (!variant.layerAlpha100) {
+		// alpha1 can't be 255 since layer alpha is < 100.
+		opaqueKernel = opaqueKernel.replace(/(\W)alpha1\s*==\s*255([^\d])/g, "$1false$2");
+	}
+
+	function prepareKernel(kernel) {
+		let
+			matches = kernel.match(/(\W|^)color1(\W|$)/g),
+			useColor1Var = matches && matches.length > 1;
+
+		matches = kernel.match(/(\W|^)color2(\W|$)/g);
+
+		let
+			useColor2Var = matches && matches.length > 1;
+
+		if (useColor1Var) {
+			innerVars.color1 = null;
+		}
+		if (useColor2Var) {
+			innerVars.color2 = null;
+		}
+
+		kernel = leftAlign(kernel);
+		kernel = applyVectorAssignmentSubstitutions(kernel, useColor1Var, useColor2Var, "pixIndex", false);
+		return applyMacros(kernel);
+	}
+
+	opaqueKernel = prepareKernel(opaqueKernel);
+	transparentKernel = prepareKernel(transparentKernel);
+
+	let
+		yIncrements = ["y++", "pixIndex += yStride"],
+		xIncrements = ["x++", "pixIndex += BYTES_PER_PIXEL"];
+
+	if (variant.masked) {
+		yIncrements.push("maskIndex += yStrideMask");
+		xIncrements.push("maskIndex++");
+	}
+
+	return `
+${docCommentForVariant(operation, Object.assign({}, variant, {fusionHasTransparency: true}), parameters).replace("Fusion can contain transparent pixels.", "Fusion can contain transparent pixels (each pixel is blended as by the opaque or the transparent fusion routine,\n * according to its alpha).")}
+CPBlend.${functionName} = function(${parameters.map(p => p.name).join(", ")}) {
+	let
+		${tabIndentLines(presentVarList(outerVars), 2)};
+
+	for (let y = 0 ; y < h; ${yIncrements.join(", ")}) {
+		for (let x = 0; x < w; ${xIncrements.join(", ")}) {
+			let
+				${tabIndentLines(presentVarList(innerVars), 4)};
+
+			if (alpha1) {
+				alpha2 = fusionData[pixIndex + ALPHA_BYTE_OFFSET];
+				if (alpha2 == 255) {
+${tabIndentLines(opaqueKernel, 5, true)}
+				} else {
+${tabIndentLines(transparentKernel, 5, true)}
+				}
+			}
+		}
+	}
+};
+`;
+}
+
 function makeBlendOperations() {
 	let
 		functionStrings = [];
@@ -1202,6 +1300,10 @@ function makeBlendOperations() {
 					|| !variant.fusionHasTransparency && operation.ontoOpaque) {
 				functionStrings.push(makeBlendOperation(functionName, operation, variant));
 			}
+
+			if (variant.fusionHasTransparency && operation.ontoTransparent && operation.ontoOpaque) {
+				functionStrings.push(makeMixedBlendOperation(opName + "Onto" + capitalizeFirst(variant.name.replace(/^transparent/, "mixed")), operation, variant));
+			}
 		}
 	}
 	
@@ -1258,6 +1360,12 @@ ${makeBlendOperation("passthroughOntoTransparentFusionWithTransparentLayerMasked
 })}
 
 CPBlend.passthroughOntoTransparentFusionWithOpaqueLayerMasked = CPBlend.passthroughOntoTransparentFusionWithTransparentLayerMasked;
+
+// The pass-through routines blend an opaque fusion pixel exactly as the transparent routines do (alpha2 = 255)
+CPBlend.passthroughOntoMixedFusionWithTransparentLayer = CPBlend.passthroughOntoTransparentFusionWithTransparentLayer;
+CPBlend.passthroughOntoMixedFusionWithOpaqueLayer = CPBlend.passthroughOntoTransparentFusionWithTransparentLayer;
+CPBlend.passthroughOntoMixedFusionWithTransparentLayerMasked = CPBlend.passthroughOntoTransparentFusionWithTransparentLayerMasked;
+CPBlend.passthroughOntoMixedFusionWithOpaqueLayerMasked = CPBlend.passthroughOntoTransparentFusionWithTransparentLayerMasked;
 
 // These "replace" routines disregard the original contents of the fusion, so we need not make both an opaque and transparent fusion variant
 
