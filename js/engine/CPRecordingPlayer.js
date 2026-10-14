@@ -33,7 +33,7 @@ import {decodePNG} from "../util/CPPNG.js";
 import {
     OP, TOOL_COLOR, TOOL_SAMPLE_ALL_LAYERS, BRUSH_FIELDS, COORD_SCALE,
     START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_REFERENCE, START_SNAPSHOT, SOURCE_CHI,
-    parseRecording, decodeEvents, decodeSnapshot, layerBitmaps, buildLayersFromTable, applyLayerTableEntry,
+    parseRecording, inflateEvents, decodeEventTimes, decodeEvents, decodeSnapshot, layerBitmaps, buildLayersFromTable, applyLayerTableEntry,
     layerTableMatches, layerList, forEachLayer, hashLayers, hashComposite, rotateRGBA, getLayerTable
 } from "./CPRecordingFormat.js";
 
@@ -119,9 +119,20 @@ export default function CPRecordingPlayer(bytes, options) {
 
     let
         /**
-         * Every step of the replay in order: {time, session, event} (event null for a session start)
+         * The replay's steps in order: step i happens at stepTimes[i]. The steps are in segments: a session start (one
+         * step, with no event), or the events of one EVTS chunk, decoded only when the replay gets to them.
          */
-        steps = [],
+        stepTimes = new Float64Array(0),
+        stepCount = 0,
+        /**
+         * @type {{first: int, count: int, session: RecordingSession, payload: ?Uint8Array, inflated: ?Object, events: ?Object[]}[]}
+         */
+        segments = [],
+        lastSegment = null,
+        /**
+         * The segments whose events are decoded, the most recently used last
+         */
+        decodedSegments = [],
         position = 0,
 
         brush = null,
@@ -208,27 +219,43 @@ export default function CPRecordingPlayer(bytes, options) {
     }
 
     /**
-     * Decode the events and fetch any referenced files. Must complete before replaying.
+     * Lay out the playback timeline (events are decoded later, as the replay reaches them) and fetch any referenced
+     * files. Must complete before replaying.
      *
      * @returns {Promise}
      */
     this.prepare = function() {
         let
             time = 0,
-            loads = [];
+            loads = [],
+            times = [];
+
+        stepCount = 0;
+        segments = [];
 
         file.sessions.forEach((session, sessionIndex) => {
             if (sessionIndex > 0) {
                 time += sessionGap;
             }
 
-            steps.push({time: time, session: session, event: null});
+            segments.push({first: stepCount, count: 1, session: session, payload: null, inflated: null, events: null});
+            times.push(Float64Array.of(time));
+            stepCount++;
 
             for (let payload of session.eventChunks) {
-                for (let event of decodeEvents(payload)) {
-                    time += Math.min(event.dt, maxIdle);
-                    steps.push({time: time, session: session, event: event});
+                let
+                    inflated = inflateEvents(payload),
+                    dts = decodeEventTimes(inflated),
+                    chunkTimes = new Float64Array(dts.length);
+
+                for (let i = 0; i < dts.length; i++) {
+                    time += Math.min(dts[i], maxIdle);
+                    chunkTimes[i] = time;
                 }
+
+                segments.push({first: stepCount, count: dts.length, session: session, payload: payload, inflated: inflated, events: null});
+                times.push(chunkTimes);
+                stepCount += dts.length;
             }
 
             if (session.snapshot) {
@@ -238,10 +265,78 @@ export default function CPRecordingPlayer(bytes, options) {
             }
         });
 
+        stepTimes = new Float64Array(stepCount);
+        for (let i = 0, offset = 0; i < times.length; offset += times[i].length, i++) {
+            stepTimes.set(times[i], offset);
+        }
+
         this.duration = time;
 
         return Promise.all(loads).then(() => this);
     };
+
+    const
+        DECODED_SEGMENTS_KEPT = 2;
+
+    /**
+     * @param {int} index - Step index
+     */
+    function segmentAt(index) {
+        if (lastSegment && index >= lastSegment.first && index < lastSegment.first + lastSegment.count) {
+            return lastSegment;
+        }
+
+        let
+            low = 0, high = segments.length - 1;
+
+        // Last segment with first <= index
+        while (low < high) {
+            let
+                mid = (low + high + 1) >> 1;
+
+            if (segments[mid].first <= index) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        lastSegment = segments[low];
+        return lastSegment;
+    }
+
+    /**
+     * @param {int} index - Step index
+     * @returns {?Object} The step's event (null for a session start)
+     */
+    function eventAt(index) {
+        let
+            segment = segmentAt(index);
+
+        if (!segment.payload) {
+            return null;
+        }
+
+        if (!segment.events) {
+            try {
+                segment.events = decodeEvents(segment.payload, segment.inflated);
+            } catch (e) {
+                // Replay what we can (nothing, for these events), and show the saved drawing at the end
+                reportDrift({session: segment.session.start.index, time: stepTimes[segment.first], at: "event", error: e});
+                segment.events = new Array(segment.count).fill({op: 0, dt: 0});
+            }
+
+            decodedSegments.push(segment);
+            while (decodedSegments.length > DECODED_SEGMENTS_KEPT) {
+                decodedSegments.shift().events = null;
+            }
+        } else if (decodedSegments[decodedSegments.length - 1] !== segment) {
+            decodedSegments.splice(decodedSegments.indexOf(segment), 1);
+            decodedSegments.push(segment);
+        }
+
+        return segment.events[index - segment.first];
+    }
 
     function loadReference(session) {
         let
@@ -794,7 +889,7 @@ export default function CPRecordingPlayer(bytes, options) {
         let
             artwork = that.artwork;
 
-        return artwork && currentSession && !inStroke && position < steps.length && steps[position].event
+        return artwork && currentSession && !inStroke && position < stepCount && segmentAt(position).payload
             && !artwork.getHistoryInfo().topMergeable;
     }
 
@@ -980,14 +1075,14 @@ export default function CPRecordingPlayer(bytes, options) {
 
     function stepIndexAfter(time) {
         let
-            low = 0, high = steps.length;
+            low = 0, high = stepCount;
 
-        // First step with step.time > time
+        // First step with stepTimes[step] > time
         while (low < high) {
             let
                 mid = (low + high) >> 1;
 
-            if (steps[mid].time <= time) {
+            if (stepTimes[mid] <= time) {
                 low = mid + 1;
             } else {
                 high = mid;
@@ -1041,29 +1136,35 @@ export default function CPRecordingPlayer(bytes, options) {
         }
     }
 
-    function applyStep(step) {
-        that.currentTime = step.time;
+    function applyStep(index) {
+        let
+            event = eventAt(index);
 
-        if (!step.event) {
-            if (currentSession && currentSession !== step.session) {
+        that.currentTime = stepTimes[index];
+
+        if (!event) {
+            let
+                session = segmentAt(index).session;
+
+            if (currentSession && currentSession !== session) {
                 endSession(currentSession);
             }
-            startSession(step.session);
+            startSession(session);
         } else {
-            if (restored && !keyframeCanReplay(step.event)) {
+            if (restored && !keyframeCanReplay(event)) {
                 retryFromEarlierKeyframe();
                 return;
             }
             try {
-                applyEvent(step.event);
+                applyEvent(event);
             } catch (e) {
-                reportDrift({session: currentSession.start.index, time: step.time, at: "event", error: e});
+                reportDrift({session: currentSession.start.index, time: that.currentTime, at: "event", error: e});
             }
         }
 
         position++;
 
-        if (position === steps.length && currentSession) {
+        if (position === stepCount && currentSession) {
             endSession(currentSession);
         }
     }
@@ -1079,11 +1180,11 @@ export default function CPRecordingPlayer(bytes, options) {
         let
             deadline = budget === undefined || budget === Infinity ? Infinity : Date.now() + budget;
 
-        while (position < steps.length && steps[position].time <= time) {
+        while (position < stepCount && stepTimes[position] <= time) {
             let
                 started = keyframeInterval > 0 ? performance.now() : 0;
 
-            applyStep(steps[position]);
+            applyStep(position);
 
             if (keyframeInterval > 0) {
                 workSinceKeyframe += performance.now() - started;
@@ -1095,7 +1196,7 @@ export default function CPRecordingPlayer(bytes, options) {
             }
 
             if (Date.now() > deadline) {
-                return position >= steps.length || steps[position].time > time;
+                return position >= stepCount || stepTimes[position] > time;
             }
         }
         return true;
@@ -1112,7 +1213,7 @@ export default function CPRecordingPlayer(bytes, options) {
      * @returns {boolean} True when every step has been replayed
      */
     this.isDone = function() {
-        return position >= steps.length;
+        return position >= stepCount;
     };
 
     /**

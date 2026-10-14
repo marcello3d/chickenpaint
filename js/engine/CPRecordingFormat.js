@@ -1105,25 +1105,28 @@ export class EventChunkWriter {
 }
 
 /**
- * Decode one EVTS payload.
+ * Inflate an EVTS payload's streams.
  *
  * @param {Uint8Array} payload
- * @returns {Object[]} events ({op, dt, ...payload}), with PNG blobs as Uint8Arrays
+ * @returns {{count: int, streams: Uint8Array, blobsOffset: int}}
  */
-export function decodeEvents(payload) {
+export function inflateEvents(payload) {
     let
         r = new ByteReader(payload),
         count = r.varint(),
         compression = r.u8(),
         rawLength = r.varint(),
         stored = r.bytes(r.varint()),
-        raw = compression === 1 ? pako.inflate(stored) : stored,
-        blobs = new ByteReader(payload.subarray(r.pos));
+        raw = compression === 1 ? pako.inflate(stored) : stored;
 
     if (compression > 1 || raw.length !== rawLength) {
         throw new Error("Bad event chunk");
     }
 
+    return {count: count, streams: raw, blobsOffset: r.pos};
+}
+
+function openStreams(raw) {
     let
         jr = new ByteReader(raw),
         n = jr.varint(),
@@ -1139,6 +1142,40 @@ export function decodeEvents(payload) {
     STREAM_NAMES.forEach((name, i) => {
         s[name] = new ByteReader(jr.bytes(lengths[i]));
     });
+    return s;
+}
+
+/**
+ * Read just the times of an EVTS payload's events (much quicker than decoding them).
+ *
+ * @param {{count: int, streams: Uint8Array}} inflated - From inflateEvents()
+ * @returns {Uint32Array} The dt of each event
+ */
+export function decodeEventTimes(inflated) {
+    let
+        dt = openStreams(inflated.streams).dt,
+        result = new Uint32Array(inflated.count);
+
+    for (let i = 0; i < result.length; i++) {
+        result[i] = dt.varint();
+    }
+    return result;
+}
+
+/**
+ * Decode one EVTS payload.
+ *
+ * @param {Uint8Array} payload
+ * @param {Object} [inflated] - inflateEvents(payload), if already done
+ * @returns {Object[]} events ({op, dt, ...payload}), with PNG blobs as Uint8Arrays
+ */
+export function decodeEvents(payload, inflated) {
+    inflated = inflated || inflateEvents(payload);
+
+    let
+        count = inflated.count,
+        blobs = new ByteReader(payload.subarray(inflated.blobsOffset)),
+        s = openStreams(inflated.streams);
 
     let
         ctx = new CoderContext(),
