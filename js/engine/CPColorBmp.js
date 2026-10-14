@@ -118,24 +118,27 @@ CPColorBmp.prototype.getPixel = function(x, y) {
 CPColorBmp.prototype.copyRectXOR = function(bmp, rect) {
     rect = this.getBounds().clipTo(rect);
     
-    var 
+    let
         w = rect.getWidth(),
         h = rect.getHeight(),
         
         buffer = new Uint8Array(w * h * CPColorBmp.BYTES_PER_PIXEL),
-        
+
+        // Whole pixels at a time: XOR of 32-bit words is the XOR of their bytes
+        out = new Uint32Array(buffer.buffer),
+        words1 = new Uint32Array(this.data.buffer, this.data.byteOffset, this.data.length >> 2),
+        words2 = new Uint32Array(bmp.data.buffer, bmp.data.byteOffset, bmp.data.length >> 2),
+
         outputIndex = 0,
-        bmp1Index = this.offsetOfPixel(rect.left, rect.top), 
-        bmp2Index = bmp.offsetOfPixel(rect.left, rect.top),
-        
-        bmp1YSkip = (this.width - w) * CPColorBmp.BYTES_PER_PIXEL,
-        bmp2YSkip = (bmp.width - w) * CPColorBmp.BYTES_PER_PIXEL,
-        
-        widthBytes = w * CPColorBmp.BYTES_PER_PIXEL;
-    
-    for (var y = rect.top; y < rect.bottom; y++, bmp1Index += bmp1YSkip, bmp2Index += bmp2YSkip) {
-        for (var x = 0; x < widthBytes; x++, outputIndex++, bmp1Index++, bmp2Index++) {
-            buffer[outputIndex] = this.data[bmp1Index] ^ bmp.data[bmp2Index];
+        bmp1Index = rect.top * this.width + rect.left,
+        bmp2Index = rect.top * bmp.width + rect.left,
+
+        bmp1YSkip = this.width - w,
+        bmp2YSkip = bmp.width - w;
+
+    for (let y = 0; y < h; y++, bmp1Index += bmp1YSkip, bmp2Index += bmp2YSkip) {
+        for (let x = 0; x < w; x++, outputIndex++, bmp1Index++, bmp2Index++) {
+            out[outputIndex] = words1[bmp1Index] ^ words2[bmp2Index];
         }
     }
 
@@ -145,22 +148,22 @@ CPColorBmp.prototype.copyRectXOR = function(bmp, rect) {
 CPColorBmp.prototype.setRectXOR = function(buffer, rect) {
     rect = this.getBounds().clipTo(rect);
     
-    var 
+    let
         w = rect.getWidth(),
         h = rect.getHeight(),
-        
-        bmp1Index = this.offsetOfPixel(rect.left, rect.top),
+
+        words = new Uint32Array(this.data.buffer, this.data.byteOffset, this.data.length >> 2),
+        xor = new Uint32Array(buffer.buffer, buffer.byteOffset, buffer.length >> 2),
+
+        bmp1Index = rect.top * this.width + rect.left,
         bufferIndex = 0,
         
-        bmp1YSkip = (this.width - w) * CPColorBmp.BYTES_PER_PIXEL,
-        
-        widthBytes = w * CPColorBmp.BYTES_PER_PIXEL;
+        bmp1YSkip = this.width - w;
     
-    for (var y = 0; y < h; y++) {
-        for (var x = 0; x < widthBytes; x++) {
-            this.data[bmp1Index++] ^= buffer[bufferIndex++];
+    for (let y = 0; y < h; y++, bmp1Index += bmp1YSkip) {
+        for (let x = 0; x < w; x++) {
+            words[bmp1Index++] ^= xor[bufferIndex++];
         }
-        bmp1Index += bmp1YSkip;
     }
 };
 
@@ -194,6 +197,17 @@ CPColorBmp.prototype.copyBitmapRect = function(bmp, dstX, dstY, srcRect) {
 
             srcIndex = bmp.offsetOfPixel(srcRect.left, srcRect.top),
             srcYSkip = (bmp.width - w) * CPColorBmp.BYTES_PER_PIXEL;
+
+        if (this.data.buffer !== bmp.data.buffer && w > 0) {
+            // Copy whole rows (not when copying within one buffer, where the pixel-by-pixel copy below defines the result)
+            let
+                rowBytes = w * CPColorBmp.BYTES_PER_PIXEL;
+
+            for (var y = 0; y < h; y++, srcIndex += rowBytes + srcYSkip, dstIndex += rowBytes + dstYSkip) {
+                this.data.set(bmp.data.subarray(srcIndex, srcIndex + rowBytes), dstIndex);
+            }
+            return;
+        }
 
         for (var y = 0; y < h; y++, srcIndex += srcYSkip, dstIndex += dstYSkip) {
             for (var x = 0; x < w; x++, srcIndex += CPColorBmp.BYTES_PER_PIXEL, dstIndex += CPColorBmp.BYTES_PER_PIXEL) {

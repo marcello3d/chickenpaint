@@ -34,8 +34,9 @@ import CPRecorder from "../js/engine/CPRecorder.js";
 import CPRecordingPlayer from "../js/engine/CPRecordingPlayer.js";
 import {save as chiSave, load as chiLoad} from "../js/engine/CPChibiFile.js";
 import {
-	parseRecording, decodeEvents, layerList, rotateRGBA, hashImage, buildLayersFromTable, getLayerTable, layerBitmaps,
-	START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_SNAPSHOT, START_REFERENCE, SOURCE_CHI, SOURCE_PNG, OP
+	parseRecording, decodeEvents, layerList, rotateRGBA, hashImage, hashLayers, buildLayersFromTable, getLayerTable, layerBitmaps,
+	START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_SNAPSHOT, START_REFERENCE, SOURCE_CHI, SOURCE_PNG, OP,
+	ENGINE_REVISION, writeChunk
 } from "../js/engine/CPRecordingFormat.js";
 import {encodePNG, decodePNG} from "../js/util/CPPNG.js";
 import {ByteReader, ByteWriter} from "../js/util/CPByteStream.js";
@@ -749,34 +750,228 @@ const
 	// Set CP_RECORDING_FUZZ_SEEDS to fuzz harder
 	FUZZ_SEEDS = Number(typeof process !== "undefined" && process.env.CP_RECORDING_FUZZ_SEEDS) || 12;
 
+/**
+ * Record random editing, replay it, and check the replay's document and undo history match the editor's.
+ */
+async function fuzzReplay(seed) {
+	let
+		random = mulberry32(seed),
+		clock = makeClock(),
+		artwork = newBlankArtwork(64 + (seed % 3) * 7, 48 + (seed % 2) * 9),
+		recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+		driver = new Driver(artwork, random, clock);
+
+	assert.strictEqual(recorder.startKind, START_BLANK);
+
+	driver.run(150);
+
+	let
+		bytes = recorder.getRecording(),
+		player = await replay(bytes);
+
+	assert.deepStrictEqual(player.drift.slice(0, 1).map(d => d.at + " " + d.time + (d.error ? ": " + d.error.stack : "")), [], "no drift");
+	assertSameDocument(player.artwork, artwork, "seed " + seed);
+	assert(!recorder.isTruncated());
+
+	// Also check that the undo histories are equivalent
+	assertSameUndoHistory(player.artwork, artwork, "seed " + seed);
+}
+
+/**
+ * Rewrite the engine revision of every session of a recording, as an older recorder would have written it (0 means
+ * the field is absent).
+ */
+function withEngineRevision(bytes, revision) {
+	let
+		r = new ByteReader(bytes),
+		out = new ByteWriter(bytes.length + 64);
+
+	out.bytes(bytes.subarray(0, 8));
+	r.pos = 8;
+	while (r.remaining > 0) {
+		let
+			length = r.u32(),
+			type = String.fromCharCode(...r.bytes(4)),
+			payload = r.bytes(length);
+
+		r.u32();
+		if (type === "SESS") {
+			// The revision is the last field, a one-byte varint
+			assert.strictEqual(payload[payload.length - 1], ENGINE_REVISION);
+			payload = revision === 0 ? payload.subarray(0, payload.length - 1) : Uint8Array.of(...payload.subarray(0, payload.length - 1), revision);
+		}
+		writeChunk(out, type, payload);
+	}
+	return out.toBytes();
+}
+
+/**
+ * Cut from a layer mask, undo back to before "add layer mask", and redo it all (which makes a new mask).
+ */
+function cutFromReAddedMask(artwork) {
+	artwork.addLayerMask();
+	artwork.rectangleSelection(new CPRect(4, 4, 20, 12));
+	artwork.cutSelection();
+	// Undo the cut, the selection and the mask
+	for (let i = 0; i < 3; i++) {
+		artwork.undo();
+	}
+	for (let i = 0; i < 3; i++) {
+		artwork.redo();
+	}
+}
+
 describe("CPRecorder and CPRecordingPlayer", function() {
 	this.timeout(600000);
 
 	for (let seed = 1; seed <= FUZZ_SEEDS; seed++) {
-		it("should replay random editing bit-exactly (seed " + seed + ")", async function() {
+		it("should replay random editing bit-exactly (seed " + seed + ")", () => fuzzReplay(seed));
+	}
+
+	// Seeds that once found bugs
+	for (let seed of [369, 815].filter(seed => seed > FUZZ_SEEDS)) {
+		it("should replay random editing bit-exactly (seed " + seed + ")", () => fuzzReplay(seed));
+	}
+
+	it("should redo a cut from a layer mask onto the mask the layer has now", function() {
+		let
+			artwork = newBlankArtwork(32, 24),
+			mask;
+
+		cutFromReAddedMask(artwork);
+		mask = artwork.getActiveLayer().mask;
+		assert.strictEqual(mask.getPixel(10, 8), 0, "cut area");
+		assert.strictEqual(mask.getPixel(2, 2), 255, "outside the cut");
+
+		artwork.undo();
+		assert.strictEqual(artwork.getActiveLayer().mask.getPixel(10, 8), 255, "after undo");
+	});
+
+	it("should replay recordings made before that fix as they were made", async function() {
+		for (let legacy of [false, true]) {
 			let
-				random = mulberry32(seed),
 				clock = makeClock(),
-				artwork = newBlankArtwork(64 + (seed % 3) * 7, 48 + (seed % 2) * 9),
-				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
-				driver = new Driver(artwork, random, clock);
+				artwork = newBlankArtwork(32, 24),
+				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 1});
 
-			assert.strictEqual(recorder.startKind, START_BLANK);
-
-			driver.run(150);
+			artwork.setLegacyCutUndo(legacy);
+			cutFromReAddedMask(artwork);
+			assert.strictEqual(artwork.getActiveLayer().mask.getPixel(10, 8), legacy ? 255 : 0);
 
 			let
 				bytes = recorder.getRecording(),
+				asRecorded = await replay(legacy ? withEngineRevision(bytes, 0) : bytes),
+				misread = await replay(withEngineRevision(bytes, legacy ? ENGINE_REVISION : 0));
+
+			assert.strictEqual(parseRecording(bytes).sessions[0].start.engine, ENGINE_REVISION);
+			assert.deepStrictEqual(asRecorded.drift, [], "legacy " + legacy);
+			assertSameDocument(asRecorded.artwork, artwork, "legacy " + legacy);
+			// Shows the revision matters
+			assert(misread.drift.length > 0, "legacy " + legacy + " replayed with the other behaviour");
+		}
+	});
+
+	it("should seek with keyframes to the same document as a replay from the start, whatever the memory budget", async function() {
+		function describeState(player) {
+			let
+				a = player.artwork;
+
+			return JSON.stringify([hashLayers(a), getLayerTable(a), layerList(a).indexOf(a.getActiveLayer()), !!a.isEditingMask(),
+				a.getSelection(), player.drift.length]);
+		}
+
+		for (let seed = 1; seed <= 6; seed++) {
+			let
+				random = mulberry32(seed),
+				clock = makeClock(),
+				artwork = newBlankArtwork(50, 40),
+				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+				driver = new Driver(artwork, random, clock);
+
+			driver.run(120);
+
+			let
+				bytes = recorder.getRecording();
+
+			for (let keyframeMemory of [1, 20000, 128 * 1024 * 1024]) {
+				let
+					player = new CPRecordingPlayer(bytes, {keyframeInterval: 1e-9, keyframeMemory: keyframeMemory});
+
+				await player.prepare();
+				player.finish();
+				assert(player.getKeyframeStats().bytes <= keyframeMemory);
+				if (keyframeMemory === 1) {
+					assert.strictEqual(player.getKeyframeStats().count, 0);
+				}
+
+				for (let i = 0; i < 12; i++) {
+					let
+						time = Math.floor(random() * (player.duration + 1)),
+						straight = new CPRecordingPlayer(bytes, {keyframeInterval: 0});
+
+					await straight.prepare();
+					straight.advanceTo(time);
+					player.seek(time);
+					player.advanceTo(time);
+					assert.strictEqual(describeState(player), describeState(straight), "seed " + seed + " budget " + keyframeMemory + " seek to " + time);
+				}
+			}
+		}
+	});
+
+	it("should take checkpoints when the editor is idle, and skip them if the drawing changed first", async function() {
+		let
+			totalSkipped = 0;
+
+		for (let seed = 1; seed <= 6; seed++) {
+			let
+				random = mulberry32(seed + 500),
+				clock = makeClock(),
+				artwork = newBlankArtwork(50, 40),
+				pending = [],
+				recorder = new CPRecorder(artwork, {
+					clock: clock,
+					checkpointInterval: 5,
+					idle: callback => {
+						let
+							entry = {callback: callback, cancelled: false};
+
+						pending.push(entry);
+						return () => { entry.cancelled = true; };
+					}
+				}),
+				driver = new Driver(artwork, random, clock),
+				run = 0, skipped = 0;
+
+			for (let i = 0; i < 150; i++) {
+				driver.step();
+				// The editor is idle sometimes right after a stroke, sometimes only after more editing
+				if (random() < 0.5) {
+					for (let entry of pending.splice(0)) {
+						if (!entry.cancelled) {
+							entry.callback();
+							run++;
+						}
+					}
+				}
+			}
+
+			let
+				bytes = recorder.getRecording(),
+				checkpoints = 0,
 				player = await replay(bytes);
 
-			assert.deepStrictEqual(player.drift.slice(0, 1).map(d => d.at + " " + d.time + (d.error ? ": " + d.error.stack : "")), [], "no drift");
+			for (let payload of parseRecording(bytes).sessions[0].eventChunks) {
+				checkpoints += decodeEvents(payload).filter(event => event.op === OP.CHECKPOINT).length;
+			}
+			skipped = run - checkpoints;
+			totalSkipped += skipped;
+			assert(checkpoints > 0, "seed " + seed + ": some checkpoints");
+			assert.deepStrictEqual(player.drift, [], "seed " + seed);
 			assertSameDocument(player.artwork, artwork, "seed " + seed);
-			assert(!recorder.isTruncated());
-
-			// Also check that the undo histories are equivalent
-			assertSameUndoHistory(player.artwork, artwork, "seed " + seed);
-		});
-	}
+		}
+		assert(totalSkipped > 0, "some checkpoints skipped");
+	});
 
 	it("should continue a recording across sessions (layers file, flat image, and mismatch)", async function() {
 		let

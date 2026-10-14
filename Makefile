@@ -51,7 +51,7 @@ OSASCRIPT := $(shell command -v osascript 2> /dev/null)
 
 CAIROSVG := $(shell command -v cairosvg 2> /dev/null)
 
-all : resources/css/chickenpaint.css resources/js/chickenpaint.js resources/js/chickenpaint-player.js \
+all : resources/css/chickenpaint.css resources/js/chickenpaint.js resources/js/chickenpaint-player.js resources/js/chickenpaint-player-worker.js \
 	resources/gfx/icons-dark-32.png resources/gfx/icons-dark-64.png \
 	resources/gfx/icons-light-32.png resources/gfx/icons-light-64.png
 
@@ -61,7 +61,7 @@ ifdef OSASCRIPT
 	osascript -e 'display notification "Build successful" with title "ChickenPaint build complete"'
 endif
 
-min : resources/js/chickenpaint.min.js resources/js/chickenpaint-player.min.js
+min : resources/js/chickenpaint.min.js resources/js/chickenpaint-player.min.js resources/js/chickenpaint-player-worker.min.js
 
 chickenpaint.zip: resources/css/chickenpaint.css resources/js/chickenpaint.js resources/js/chickenpaint.min.js resources/js/chickenpaint.min.js.map js/engine/CPBlend.js
 	rm -f $@
@@ -84,13 +84,22 @@ resources/js/chickenpaint.js : js/engine/* js/gui/* js/util/* js/languages/* js/
 	node_modules/.bin/browserify --standalone ChickenPaint --debug --entry js/ChickenPaint.js --transform babelify | node_modules/.bin/exorcist $@.map > $@
 
 # Timelapse player for drawing recordings (see docs/recording-format.md)
-resources/js/chickenpaint-player.js : js/engine/* js/util/* js/ChickenPaintPlayer.js js/engine/CPBlend.js
+resources/js/chickenpaint-player.js : js/engine/* js/util/* js/player/* js/ChickenPaintPlayer.js js/engine/CPBlend.js
 	mkdir -p resources/js
 	node_modules/.bin/browserify --standalone ChickenPaintPlayer --debug --entry js/ChickenPaintPlayer.js --transform babelify | node_modules/.bin/exorcist $@.map > $@
 
 resources/js/chickenpaint-player.min.js resources/js/chickenpaint-player.min.js.map : resources/js/chickenpaint-player.js
 	cd resources/js && ../../node_modules/.bin/uglifyjs --compress --mangle \
 		--source-map "content='chickenpaint-player.js.map',filename='chickenpaint-player.min.js.map',url='chickenpaint-player.min.js.map',root='./'" --output chickenpaint-player.min.js -- chickenpaint-player.js
+
+# The player's worker (replays off the page where the browser has OffscreenCanvas), loaded from next to the player
+resources/js/chickenpaint-player-worker.js : js/engine/* js/util/* js/player/* js/ChickenPaintPlayerWorker.js js/engine/CPBlend.js
+	mkdir -p resources/js
+	node_modules/.bin/browserify --debug --entry js/ChickenPaintPlayerWorker.js --transform babelify | node_modules/.bin/exorcist $@.map > $@
+
+resources/js/chickenpaint-player-worker.min.js resources/js/chickenpaint-player-worker.min.js.map : resources/js/chickenpaint-player-worker.js
+	cd resources/js && ../../node_modules/.bin/uglifyjs --compress --mangle \
+		--source-map "content='chickenpaint-player-worker.js.map',filename='chickenpaint-player-worker.min.js.map',url='chickenpaint-player-worker.min.js.map',root='./'" --output chickenpaint-player-worker.min.js -- chickenpaint-player-worker.js
 
 ifdef CAIROSVG
 # Render icons with CairoSVG (https://cairosvg.org/) - Preferred since results are much sharper at 32px size 

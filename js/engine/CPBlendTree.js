@@ -469,6 +469,20 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 	 * @param {CPRect} rect
 	 */
 	function fuseOntoPartlyTransparentFusion(fusion, childNode, rect) {
+		if (childNode.alpha <= 0) {
+			return;
+		}
+
+		// Generated routines that make that choice per pixel (see makeMixedBlendOperation in BlendGenerator.js)
+		let
+			mixed = CPBlend[CPBlend.BLEND_MODE_CODENAMES[childNode.blendMode] + "OntoMixedFusionWith"
+				+ (childNode.alpha == 100 ? "OpaqueLayer" : "TransparentLayer") + (childNode.mask ? "Masked" : "")];
+
+		if (mixed) {
+			mixed(fusion, childNode.image, childNode.alpha, fusion.getBounds().clipTo(rect), childNode.mask);
+			return;
+		}
+
 		let
 			data = fusion.data,
 			width = fusion.width,

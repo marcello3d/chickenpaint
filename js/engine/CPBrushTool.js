@@ -84,9 +84,14 @@ export class CPBrushTool {
 		 * from the layer as input for its next drawing operation (i.e. please merge the stroke buffer through to the
 		 * layer before the next call).
 		 *
+		 * Brushes that only accumulate into the strokeBuffer and merge it onto the pre-stroke pixels (undoImage) don't
+		 * need this: their merge is a pure function of the strokeBuffer and undoImage (it never reads its own output),
+		 * so merging once per repaint (fusionLayers) or at the end of the stroke gives exactly the same pixels as
+		 * merging after every dab, while touching each pixel far fewer times.
+		 *
 		 * @type {boolean}
 		 */
-		this.wantsOutputAsInput = true;
+		this.wantsOutputAsInput = false;
 	}
 
 	/**

@@ -175,6 +175,13 @@ export default function CPArtwork(_width, _height) {
          */
         strokedRegion = new CPRect(0, 0, 0, 0),
 
+        /**
+         * The area of strokeBuffer that isn't zero (painted on since it was last cleared).
+         *
+         * @type {CPRect}
+         */
+        strokeBufferUsed = new CPRect(0, 0, 0, 0),
+
         brushManager = new CPBrushManager(),
 
         that = this;
@@ -234,6 +241,11 @@ export default function CPArtwork(_width, _height) {
          * @type {CPUndo[]}
          */
         undoList = [],
+
+        /**
+         * Replay recordings made before cut undo was fixed the way they were made (see setLegacyCutUndo()).
+         */
+        legacyCutUndo = false,
 
         /**
          * @type {CPUndo[]}
@@ -775,6 +787,7 @@ export default function CPArtwork(_width, _height) {
         }
 
         paintUndoArea.union(imageRect);
+        strokeBufferUsed.union(imageRect);
 
         let
             destImage = maskEditingMode ? curLayer.mask : curLayer.image,
@@ -1139,12 +1152,42 @@ export default function CPArtwork(_width, _height) {
         return total;
     };
     
+    /**
+     * Undoing and redoing a cut used to write to the bitmap the layer (or its mask) had when the cut was made, which
+     * isn't the layer's bitmap any more after undoing past an operation that replaced it (e.g. "add layer mask") and
+     * redoing it. Recordings made with that behaviour must be replayed with it (CPRecordingPlayer sets this).
+     *
+     * @param {boolean} legacy
+     */
+    this.setLegacyCutUndo = function(legacy) {
+        legacyCutUndo = !!legacy;
+    };
+
     this.isUndoAllowed = function() {
         return undoList.length > 0;
     };
 
     this.isRedoAllowed = function() {
         return redoList.length > 0;
+    };
+
+    /**
+     * Describe the undo history (for a drawing recording player, which needs to know whether a copy of the document
+     * without its history replays the same as the original).
+     *
+     * @returns {{undoDepth: int, redoDepth: int, topMergeable: boolean}} topMergeable is true if the next undoable
+     * operation could be merged into the most recent one, or amend it (a move), so that undoing it would also undo the
+     * earlier change.
+     */
+    this.getHistoryInfo = function() {
+        let
+            top = undoList[undoList.length - 1];
+
+        return {
+            undoDepth: undoList.length,
+            redoDepth: redoList.length,
+            topMergeable: !!top && (top.merge !== CPUndo.prototype.merge || top instanceof CPActionMoveSelection)
+        };
     };
 
     //
@@ -1808,7 +1851,9 @@ export default function CPArtwork(_width, _height) {
         prepareForLayerPaintUndo();
         paintUndoArea.makeEmpty();
 
-        strokeBuffer.clearAll(0);
+        // Only the area painted by previous strokes needs clearing
+        strokeBuffer.clearRect(strokeBufferUsed, 0);
+        strokeBufferUsed.makeEmpty();
         strokedRegion.makeEmpty();
 
         lastX = x;
@@ -3313,13 +3358,22 @@ export default function CPArtwork(_width, _height) {
      */
     function CPActionCut(layer, cutFromMask, selection) {
         const
-            fromImage = cutFromMask ? layer.mask : layer.image,
-            cutData = fromImage.cloneRect(selection);
+            cutImage = cutFromMask ? layer.mask : layer.image,
+            legacy = legacyCutUndo,
+            cutData = cutImage.cloneRect(selection);
+
+        /**
+         * The bitmap to cut from/restore to: the layer's current one (it may have been replaced since the cut, e.g. by
+         * undoing and redoing "add layer mask").
+         */
+        function target() {
+            return legacy ? cutImage : cutFromMask ? layer.mask : layer.image;
+        }
 
         selection = selection.clone();
 
         this.undo = function() {
-            fromImage.copyBitmapRect(cutData, selection.left, selection.top, cutData.getBounds());
+            target().copyBitmapRect(cutData, selection.left, selection.top, cutData.getBounds());
 
             that.setActiveLayer(layer, cutFromMask);
             that.setSelection(selection);
@@ -3328,9 +3382,9 @@ export default function CPArtwork(_width, _height) {
 
         this.redo = function() {
             if (cutFromMask) {
-                fromImage.clearRect(selection, EMPTY_MASK_COLOR);
+                target().clearRect(selection, EMPTY_MASK_COLOR);
             } else {
-                fromImage.clearRect(selection, EMPTY_LAYER_COLOR);
+                target().clearRect(selection, EMPTY_LAYER_COLOR);
             }
 
             clipboard = new CPClip(cutData, selection.left, selection.top);

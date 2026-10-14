@@ -56,7 +56,10 @@ let player = new ChickenPaintPlayer({
     onTimeUpdate: info => {},                    // {currentTime, duration, isPlaying, progress}
     onEnd: () => {},
     onError: error => {},
-    onDrift: drift => {}                         // the replay doesn't match the recorded drawing (see Hashes)
+    onDrift: drift => {},                        // the replay doesn't match the recorded drawing (see Hashes)
+    keyframeMemory: 32 * 1024 * 1024,            // optional: memory for seeking (default: by device)
+    worker: true,                                // replay in a worker where the browser can (default)
+    workerUrl: "chickenpaint-player-worker.min.js" // default: next to chickenpaint-player(.min).js
 });
 
 player.ready;        // Promise, resolves once loaded
@@ -69,6 +72,13 @@ player.play(); player.pause(); player.seek(ms); player.setSpeed(rate); player.de
 The player replays the recording through ChickenPaint's own painting engine, so it doesn't need any pictures except
 those the recording can't do without. If the replay doesn't reproduce the drawing exactly (`onDrift`), the player shows
 `finalImageUrl` at the end of playback.
+
+Where the browser has `OffscreenCanvas` (not Safari before 16.4), the replay runs in a worker,
+`chickenpaint-player-worker.min.js` (built alongside the player, and served from the same directory), which draws
+onto the player's canvas, so the page stays responsive however much there is to replay (seeking, high speeds). If the
+worker can't start, the player replays on the page. Either way, seeking restores the nearest of the keyframes (copies
+of the replay kept in memory) taken during playback; how much memory they may use depends on the device
+(`ChickenPaintPlayer.defaultKeyframeMemory()`: less on phones).
 
 ## How recording works
 
@@ -165,7 +175,16 @@ varint  number of layer table entries
 varint  active layer (index into the layer table)
 u8      1 if the active layer's mask is being edited, else 0
 rect    selection (all zero for none)
+varint  engine revision (0 if absent: it was added later, and readers ignore bytes after the fields they know)
 ```
+
+The engine revision tells the player to reproduce engine behaviour that has since been fixed, so that a recording keeps
+replaying the way it was made:
+
+| Revision | Behaviour                                                                                                    |
+|----------|--------------------------------------------------------------------------------------------------------------|
+| 0        | Undoing or redoing a cut writes to the bitmap the layer (or its mask) had when the cut was made, even after undoing past "add layer mask" and redoing it gave the layer a new mask |
+| 1        | Undoing or redoing a cut writes to the layer's current bitmap                                                 |
 
 The layer table lists every layer and group in *table order*: depth-first, each group followed by its children, children
 from bottom to top. Each entry:

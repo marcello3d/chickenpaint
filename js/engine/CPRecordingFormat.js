@@ -62,6 +62,15 @@ export const
     SOURCE_PNG = 0,
     SOURCE_CHI = 1,
 
+    /**
+     * Revision of the engine behaviour a session was recorded with, stored at the end of its SESS chunk (absent = 0),
+     * so that a fix that changes what an editing operation does doesn't make older recordings replay differently:
+     *   0 - undo/redo of a cut wrote to the bitmap the layer (or its mask) had when the cut was made, even if the
+     *       layer had been given a new one since (undoing "add layer mask" and redoing it makes a new mask)
+     *   1 - undo/redo of a cut writes to the layer's current bitmap
+     */
+    ENGINE_REVISION = 1,
+
     SESSION_END_TRUNCATED = 1,
     SESSION_END_SIMPLE = 2,
 
@@ -687,6 +696,7 @@ function readRect(r) {
  * @property {int} activeLayer - Index into layers
  * @property {boolean} editingMask
  * @property {{left, top, right, bottom}} selection
+ * @property {int} engine - ENGINE_REVISION the session was recorded with (0 if absent)
  */
 
 /**
@@ -722,6 +732,7 @@ export function encodeSessionStart(start) {
     w.varint(start.activeLayer);
     w.u8(start.editingMask ? 1 : 0);
     writeRect(w, start.selection);
+    w.varint(start.engine === undefined ? ENGINE_REVISION : start.engine);
 
     return w.toBytes();
 }
@@ -763,6 +774,8 @@ export function decodeSessionStart(r) {
     start.activeLayer = r.varint();
     start.editingMask = r.u8() !== 0;
     start.selection = readRect(r);
+    // Fields appended later are absent from older recordings
+    start.engine = r.remaining > 0 ? r.varint() : 0;
 
     return start;
 }
@@ -1092,25 +1105,28 @@ export class EventChunkWriter {
 }
 
 /**
- * Decode one EVTS payload.
+ * Inflate an EVTS payload's streams.
  *
  * @param {Uint8Array} payload
- * @returns {Object[]} events ({op, dt, ...payload}), with PNG blobs as Uint8Arrays
+ * @returns {{count: int, streams: Uint8Array, blobsOffset: int}}
  */
-export function decodeEvents(payload) {
+export function inflateEvents(payload) {
     let
         r = new ByteReader(payload),
         count = r.varint(),
         compression = r.u8(),
         rawLength = r.varint(),
         stored = r.bytes(r.varint()),
-        raw = compression === 1 ? pako.inflate(stored) : stored,
-        blobs = new ByteReader(payload.subarray(r.pos));
+        raw = compression === 1 ? pako.inflate(stored) : stored;
 
     if (compression > 1 || raw.length !== rawLength) {
         throw new Error("Bad event chunk");
     }
 
+    return {count: count, streams: raw, blobsOffset: r.pos};
+}
+
+function openStreams(raw) {
     let
         jr = new ByteReader(raw),
         n = jr.varint(),
@@ -1126,6 +1142,40 @@ export function decodeEvents(payload) {
     STREAM_NAMES.forEach((name, i) => {
         s[name] = new ByteReader(jr.bytes(lengths[i]));
     });
+    return s;
+}
+
+/**
+ * Read just the times of an EVTS payload's events (much quicker than decoding them).
+ *
+ * @param {{count: int, streams: Uint8Array}} inflated - From inflateEvents()
+ * @returns {Uint32Array} The dt of each event
+ */
+export function decodeEventTimes(inflated) {
+    let
+        dt = openStreams(inflated.streams).dt,
+        result = new Uint32Array(inflated.count);
+
+    for (let i = 0; i < result.length; i++) {
+        result[i] = dt.varint();
+    }
+    return result;
+}
+
+/**
+ * Decode one EVTS payload.
+ *
+ * @param {Uint8Array} payload
+ * @param {Object} [inflated] - inflateEvents(payload), if already done
+ * @returns {Object[]} events ({op, dt, ...payload}), with PNG blobs as Uint8Arrays
+ */
+export function decodeEvents(payload, inflated) {
+    inflated = inflated || inflateEvents(payload);
+
+    let
+        count = inflated.count,
+        blobs = new ByteReader(payload.subarray(inflated.blobsOffset)),
+        s = openStreams(inflated.streams);
 
     let
         ctx = new CoderContext(),

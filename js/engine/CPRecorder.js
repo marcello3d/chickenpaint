@@ -27,7 +27,7 @@ import {encodePNG} from "../util/CPPNG.js";
 import {
     OP, BRUSH_FIELDS, COORD_SCALE,
     START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_REFERENCE, START_SNAPSHOT, SOURCE_PNG,
-    CHUNK_HEADER, CHUNK_SESSION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END,
+    CHUNK_HEADER, CHUNK_SESSION, ENGINE_REVISION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END,
     EventChunkWriter, writeChunk, finishRecording, parseRecording, encodeHeader, encodeSessionStart, encodeSessionEnd,
     getLayerTable, layerList, forEachLayer, hashLayers, hashComposite, hashImage, rotateRGBA
 } from "./CPRecordingFormat.js";
@@ -114,6 +114,10 @@ function isBlankDocument(artwork) {
  * @param {int} [options.maxBytes] - Size limit for the whole recording file
  * @param {int} [options.maxEvents] - Event limit for this session
  * @param {int} [options.checkpointInterval] - Minimum events between composite hash checkpoints
+ * @param {function(function()):function()} [options.idle] - Schedules a callback for when the editor is idle, and
+ *     returns a function that cancels it. Checkpoint hashes (a few ms for a big drawing) are then computed when idle
+ *     instead of at the end of a stroke; if the drawing changes first, that checkpoint is skipped, and tried again at
+ *     the end of the next stroke. Without it they're computed at once.
  * @param {function():number} [options.clock] - Millisecond clock (defaults to performance.now())
  * @param {int} [options.startedAt] - Wall clock time of the session start (ms since the epoch)
  *
@@ -155,6 +159,12 @@ export default function CPRecorder(artwork, options) {
         toolTexture,
         knownClip = artwork.getClipboard(),
         pendingTransform = false,
+
+        /**
+         * Cancels the checkpoint waiting for the editor to be idle (options.idle)
+         */
+        cancelCheckpoint = null,
+        drawingChanged = false,
 
         attached = true;
 
@@ -282,11 +292,35 @@ export default function CPRecorder(artwork, options) {
         return {x: qx, y: qy, p: qp};
     }
 
+    function checkpoint() {
+        eventsSinceCheckpoint = 0;
+        emit({op: OP.CHECKPOINT, hash: hashComposite(artwork)});
+    }
+
     function maybeCheckpoint() {
-        if (eventsSinceCheckpoint >= checkpointInterval) {
-            eventsSinceCheckpoint = 0;
-            emit({op: OP.CHECKPOINT, hash: hashComposite(artwork)});
+        if (eventsSinceCheckpoint < checkpointInterval || cancelCheckpoint) {
+            return;
         }
+        if (!options.idle) {
+            checkpoint();
+            return;
+        }
+
+        let
+            due = eventCount;
+
+        drawingChanged = false;
+        cancelCheckpoint = options.idle(() => {
+            cancelCheckpoint = null;
+            // The hash must be of the drawing as the last event left it
+            if (attached && !truncated && !inStroke && !drawingChanged && eventCount === due) {
+                checkpoint();
+            }
+        });
+    }
+
+    function onUpdateRegion() {
+        drawingChanged = true;
     }
 
     function onAddUndo(undo) {
@@ -661,7 +695,8 @@ export default function CPRecorder(artwork, options) {
             layers: getLayerTable(artwork),
             activeLayer: Math.max(0, layers.indexOf(artwork.getActiveLayer())),
             editingMask: artwork.isEditingMask(),
-            selection: rectOf(selection)
+            selection: rectOf(selection),
+            engine: ENGINE_REVISION
         };
     }
 
@@ -698,6 +733,7 @@ export default function CPRecorder(artwork, options) {
     // == Wrapping =====================================================================================================
 
     artwork.on("addUndo", onAddUndo);
+    artwork.on("updateRegion", onUpdateRegion);
 
     for (let name of Object.keys(handlers)) {
         let
@@ -798,6 +834,11 @@ export default function CPRecorder(artwork, options) {
                 artwork[name] = originals[name];
             }
             artwork.off("addUndo", onAddUndo);
+            artwork.off("updateRegion", onUpdateRegion);
+            if (cancelCheckpoint) {
+                cancelCheckpoint();
+                cancelCheckpoint = null;
+            }
         }
     };
 }
