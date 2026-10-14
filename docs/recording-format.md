@@ -165,7 +165,16 @@ varint  number of layer table entries
 varint  active layer (index into the layer table)
 u8      1 if the active layer's mask is being edited, else 0
 rect    selection (all zero for none)
+varint  engine revision (0 if absent: it was added later, and readers ignore bytes after the fields they know)
 ```
+
+The engine revision tells the player to reproduce engine behaviour that has since been fixed, so that a recording keeps
+replaying the way it was made:
+
+| Revision | Behaviour                                                                                                    |
+|----------|--------------------------------------------------------------------------------------------------------------|
+| 0        | Undoing or redoing a cut writes to the bitmap the layer (or its mask) had when the cut was made, even after undoing past "add layer mask" and redoing it gave the layer a new mask |
+| 1        | Undoing or redoing a cut writes to the layer's current bitmap                                                 |
 
 The layer table lists every layer and group in *table order*: depth-first, each group followed by its children, children
 from bottom to top. Each entry:

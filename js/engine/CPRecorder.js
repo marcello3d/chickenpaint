@@ -27,7 +27,7 @@ import {encodePNG} from "../util/CPPNG.js";
 import {
     OP, BRUSH_FIELDS, COORD_SCALE,
     START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_REFERENCE, START_SNAPSHOT, SOURCE_PNG,
-    CHUNK_HEADER, CHUNK_SESSION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END,
+    CHUNK_HEADER, CHUNK_SESSION, ENGINE_REVISION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END,
     EventChunkWriter, writeChunk, finishRecording, parseRecording, encodeHeader, encodeSessionStart, encodeSessionEnd,
     getLayerTable, layerList, forEachLayer, hashLayers, hashComposite, hashImage, rotateRGBA
 } from "./CPRecordingFormat.js";
@@ -661,7 +661,8 @@ export default function CPRecorder(artwork, options) {
             layers: getLayerTable(artwork),
             activeLayer: Math.max(0, layers.indexOf(artwork.getActiveLayer())),
             editingMask: artwork.isEditingMask(),
-            selection: rectOf(selection)
+            selection: rectOf(selection),
+            engine: ENGINE_REVISION
         };
     }
 

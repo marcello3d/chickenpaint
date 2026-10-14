@@ -32,6 +32,7 @@ import {decodePNG} from "../util/CPPNG.js";
 import {
     OP, TOOL_COLOR, TOOL_SAMPLE_ALL_LAYERS, BRUSH_FIELDS, COORD_SCALE,
     START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_REFERENCE, START_SNAPSHOT, SOURCE_CHI,
+    ENGINE_REVISION,
     parseRecording, decodeEvents, decodeSnapshot, layerBitmaps, buildLayersFromTable, applyLayerTableEntry,
     layerTableMatches, layerList, forEachLayer, hashLayers, hashComposite, rotateRGBA
 } from "./CPRecordingFormat.js";
@@ -353,6 +354,8 @@ export default function CPRecordingPlayer(bytes, options) {
             artwork.emptySelection();
         }
         artwork.clearHistory();
+        // Replay as the engine that made the recording behaved
+        artwork.setLegacyCutUndo((start.engine || 0) < 1);
         artwork.setClipboard(null);
         artwork.setBrushTexture(null);
 

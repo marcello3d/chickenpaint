@@ -236,6 +236,11 @@ export default function CPArtwork(_width, _height) {
         undoList = [],
 
         /**
+         * Replay recordings made before cut undo was fixed the way they were made (see setLegacyCutUndo()).
+         */
+        legacyCutUndo = false,
+
+        /**
          * @type {CPUndo[]}
          */
         redoList = [],
@@ -1139,6 +1144,17 @@ export default function CPArtwork(_width, _height) {
         return total;
     };
     
+    /**
+     * Undoing and redoing a cut used to write to the bitmap the layer (or its mask) had when the cut was made, which
+     * isn't the layer's bitmap any more after undoing past an operation that replaced it (e.g. "add layer mask") and
+     * redoing it. Recordings made with that behaviour must be replayed with it (CPRecordingPlayer sets this).
+     *
+     * @param {boolean} legacy
+     */
+    this.setLegacyCutUndo = function(legacy) {
+        legacyCutUndo = !!legacy;
+    };
+
     this.isUndoAllowed = function() {
         return undoList.length > 0;
     };
@@ -3313,13 +3329,22 @@ export default function CPArtwork(_width, _height) {
      */
     function CPActionCut(layer, cutFromMask, selection) {
         const
-            fromImage = cutFromMask ? layer.mask : layer.image,
-            cutData = fromImage.cloneRect(selection);
+            cutImage = cutFromMask ? layer.mask : layer.image,
+            legacy = legacyCutUndo,
+            cutData = cutImage.cloneRect(selection);
+
+        /**
+         * The bitmap to cut from/restore to: the layer's current one (it may have been replaced since the cut, e.g. by
+         * undoing and redoing "add layer mask").
+         */
+        function target() {
+            return legacy ? cutImage : cutFromMask ? layer.mask : layer.image;
+        }
 
         selection = selection.clone();
 
         this.undo = function() {
-            fromImage.copyBitmapRect(cutData, selection.left, selection.top, cutData.getBounds());
+            target().copyBitmapRect(cutData, selection.left, selection.top, cutData.getBounds());
 
             that.setActiveLayer(layer, cutFromMask);
             that.setSelection(selection);
@@ -3328,9 +3353,9 @@ export default function CPArtwork(_width, _height) {
 
         this.redo = function() {
             if (cutFromMask) {
-                fromImage.clearRect(selection, EMPTY_MASK_COLOR);
+                target().clearRect(selection, EMPTY_MASK_COLOR);
             } else {
-                fromImage.clearRect(selection, EMPTY_LAYER_COLOR);
+                target().clearRect(selection, EMPTY_LAYER_COLOR);
             }
 
             clipboard = new CPClip(cutData, selection.left, selection.top);

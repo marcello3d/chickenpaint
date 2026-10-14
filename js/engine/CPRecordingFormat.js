@@ -62,6 +62,15 @@ export const
     SOURCE_PNG = 0,
     SOURCE_CHI = 1,
 
+    /**
+     * Revision of the engine behaviour a session was recorded with, stored at the end of its SESS chunk (absent = 0),
+     * so that a fix that changes what an editing operation does doesn't make older recordings replay differently:
+     *   0 - undo/redo of a cut wrote to the bitmap the layer (or its mask) had when the cut was made, even if the
+     *       layer had been given a new one since (undoing "add layer mask" and redoing it makes a new mask)
+     *   1 - undo/redo of a cut writes to the layer's current bitmap
+     */
+    ENGINE_REVISION = 1,
+
     SESSION_END_TRUNCATED = 1,
     SESSION_END_SIMPLE = 2,
 
@@ -687,6 +696,7 @@ function readRect(r) {
  * @property {int} activeLayer - Index into layers
  * @property {boolean} editingMask
  * @property {{left, top, right, bottom}} selection
+ * @property {int} engine - ENGINE_REVISION the session was recorded with (0 if absent)
  */
 
 /**
@@ -722,6 +732,7 @@ export function encodeSessionStart(start) {
     w.varint(start.activeLayer);
     w.u8(start.editingMask ? 1 : 0);
     writeRect(w, start.selection);
+    w.varint(start.engine === undefined ? ENGINE_REVISION : start.engine);
 
     return w.toBytes();
 }
@@ -763,6 +774,8 @@ export function decodeSessionStart(r) {
     start.activeLayer = r.varint();
     start.editingMask = r.u8() !== 0;
     start.selection = readRect(r);
+    // Fields appended later are absent from older recordings
+    start.engine = r.remaining > 0 ? r.varint() : 0;
 
     return start;
 }
