@@ -27,6 +27,10 @@ import {createCanvas} from "../util/Canvas.js";
 
 const
     FRAME_BUDGET_MS = 12,
+    /**
+     * Replay time per frame while seeking: nothing is drawn meanwhile, so it can be longer
+     */
+    SEEK_BUDGET_MS = 30,
     MIN_SPEED = 0.25,
     MAX_SPEED = 256;
 
@@ -60,7 +64,7 @@ const
  * @param {number} [options.maxIdle]
  * @param {number} [options.keyframeMemory]
  * @param {function(string):Promise<Uint8Array>} [options.fetch] - Loads files the recording refers to
- * @param {function(Object)} [options.onTimeUpdate] - {currentTime, duration, isPlaying, progress}
+ * @param {function(Object)} [options.onTimeUpdate] - {currentTime, duration, isPlaying, progress, seeking}
  * @param {function()} [options.onEnd]
  * @param {function(Object)} [options.onDrift]
  * @param {function(int, int)} [options.onCanvasSize] - The canvas was resized (width, height)
@@ -81,6 +85,16 @@ export default function CPPlaybackLoop(canvas, options) {
         time = 0,
         playing = false,
         caughtUp = true,
+        /**
+         * A seek is on its way to its target. Double buffering: the canvas keeps the last frame drawn before the seek
+         * until the replay reaches the target, so seeking (backwards especially, from a keyframe or the start) never
+         * shows a keyframe, a blank canvas or a half-replayed one.
+         */
+        seeking = false,
+        /**
+         * The saved drawing is shown over the replay (onFinalImage(true))
+         */
+        finalShown = false,
         destroyed = false,
         frame = 0,
         lastTick = 0,
@@ -97,7 +111,8 @@ export default function CPPlaybackLoop(canvas, options) {
     Object.defineProperties(this, {
         duration: {get: () => player ? player.duration : 0},
         currentTime: {get: () => time},
-        isPlaying: {get: () => playing}
+        isPlaying: {get: () => playing},
+        seeking: {get: () => seeking}
     });
 
     function emitTime() {
@@ -109,7 +124,8 @@ export default function CPPlaybackLoop(canvas, options) {
                 currentTime: time,
                 duration: duration,
                 isPlaying: playing,
-                progress: duration ? time / duration : 0
+                progress: duration ? time / duration : 0,
+                seeking: seeking
             });
         }
     }
@@ -196,7 +212,16 @@ export default function CPPlaybackLoop(canvas, options) {
 
     function advance(budget) {
         if (player) {
-            caughtUp = player.advanceTo(time, budget === undefined ? FRAME_BUDGET_MS : budget);
+            caughtUp = player.advanceTo(time, budget === undefined ? (seeking ? SEEK_BUDGET_MS : FRAME_BUDGET_MS) : budget);
+        }
+    }
+
+    function showFinalImage(show) {
+        if (show !== finalShown) {
+            finalShown = show;
+            if (options.onFinalImage) {
+                options.onFinalImage(show);
+            }
         }
     }
 
@@ -229,16 +254,25 @@ export default function CPPlaybackLoop(canvas, options) {
             }
 
             advance();
-            render();
 
-            if (playing) {
+            let
+                seeked = seeking && caughtUp;
+
+            if (seeked) {
+                seeking = false;
+            }
+
+            // Only a frame at the playback time reaches the canvas (see seeking)
+            if (!seeking) {
+                render();
+            }
+
+            if (playing || seeked) {
                 emitTime();
             }
 
             if (finished()) {
-                if (options.onFinalImage) {
-                    options.onFinalImage(player.drift.length > 0);
-                }
+                showFinalImage(player.drift.length > 0);
 
                 if (playing) {
                     playing = false;
@@ -247,6 +281,8 @@ export default function CPPlaybackLoop(canvas, options) {
                         options.onEnd();
                     }
                 }
+            } else if (seeked) {
+                showFinalImage(false);
             }
         } catch (e) {
             fail(e);
@@ -328,9 +364,8 @@ export default function CPPlaybackLoop(canvas, options) {
 
         time = ms;
         caughtUp = false;
-        if (options.onFinalImage) {
-            options.onFinalImage(false);
-        }
+        seeking = true;
+        // The saved drawing (if shown) stays until the replay gets there, as the canvas does
         emitTime();
         schedule();
     };
