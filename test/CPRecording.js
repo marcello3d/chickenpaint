@@ -919,6 +919,60 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 		}
 	});
 
+	it("should take checkpoints when the editor is idle, and skip them if the drawing changed first", async function() {
+		let
+			totalSkipped = 0;
+
+		for (let seed = 1; seed <= 6; seed++) {
+			let
+				random = mulberry32(seed + 500),
+				clock = makeClock(),
+				artwork = newBlankArtwork(50, 40),
+				pending = [],
+				recorder = new CPRecorder(artwork, {
+					clock: clock,
+					checkpointInterval: 5,
+					idle: callback => {
+						let
+							entry = {callback: callback, cancelled: false};
+
+						pending.push(entry);
+						return () => { entry.cancelled = true; };
+					}
+				}),
+				driver = new Driver(artwork, random, clock),
+				run = 0, skipped = 0;
+
+			for (let i = 0; i < 150; i++) {
+				driver.step();
+				// The editor is idle sometimes right after a stroke, sometimes only after more editing
+				if (random() < 0.5) {
+					for (let entry of pending.splice(0)) {
+						if (!entry.cancelled) {
+							entry.callback();
+							run++;
+						}
+					}
+				}
+			}
+
+			let
+				bytes = recorder.getRecording(),
+				checkpoints = 0,
+				player = await replay(bytes);
+
+			for (let payload of parseRecording(bytes).sessions[0].eventChunks) {
+				checkpoints += decodeEvents(payload).filter(event => event.op === OP.CHECKPOINT).length;
+			}
+			skipped = run - checkpoints;
+			totalSkipped += skipped;
+			assert(checkpoints > 0, "seed " + seed + ": some checkpoints");
+			assert.deepStrictEqual(player.drift, [], "seed " + seed);
+			assertSameDocument(player.artwork, artwork, "seed " + seed);
+		}
+		assert(totalSkipped > 0, "some checkpoints skipped");
+	});
+
 	it("should continue a recording across sessions (layers file, flat image, and mismatch)", async function() {
 		let
 			random = mulberry32(100),

@@ -1148,6 +1148,26 @@ export default function ChickenPaint(options) {
         }
     };
 
+    /**
+     * Call the callback when the browser is idle (soon, where requestIdleCallback isn't supported).
+     *
+     * @param {function()} callback
+     * @returns {function()} Cancels the call
+     */
+    function whenIdle(callback) {
+        if (typeof requestIdleCallback === "function") {
+            let
+                handle = requestIdleCallback(callback, {timeout: 2000});
+
+            return () => cancelIdleCallback(handle);
+        }
+
+        let
+            handle = setTimeout(callback, 100);
+
+        return () => clearTimeout(handle);
+    }
+
     function startRecording(previous) {
         if (!options.recordDrawing) {
             return;
@@ -1160,7 +1180,9 @@ export default function ChickenPaint(options) {
             recorder = new CPRecorder(that.artwork, {
                 previous: previous || null,
                 sourceUrl: options.recordingSourceUrl || "",
-                sourceFormat: options.loadChibiFileUrl ? SOURCE_CHI : SOURCE_PNG
+                sourceFormat: options.loadChibiFileUrl ? SOURCE_CHI : SOURCE_PNG,
+                // Hash checkpoints between strokes, not at pen-up
+                idle: whenIdle
             });
         } catch (e) {
             console.error(e);
