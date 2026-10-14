@@ -33,6 +33,26 @@ const
 	BYTES_PER_PIXEL = 4,
 	ALPHA_BYTE_OFFSET = 3;
 
+/**
+ * Copy the rectangle of the layer onto the fusion (both the same size). The generated version copies byte by byte, this
+ * copies whole rows (the same result).
+ */
+CPBlend.replaceOntoFusionWithOpaqueLayer = function(fusion, layer, layerAlpha, srcRect) {
+	let
+		w = srcRect.getWidth() | 0,
+		rowBytes = w * BYTES_PER_PIXEL,
+		stride = layer.width * BYTES_PER_PIXEL,
+		index = layer.offsetOfPixel(srcRect.left, srcRect.top) | 0;
+
+	if (w <= 0 || fusion.data.buffer === layer.data.buffer) {
+		return;
+	}
+
+	for (let y = srcRect.top; y < srcRect.bottom; y++, index += stride) {
+		fusion.data.set(layer.data.subarray(index, index + rowBytes), index);
+	}
+};
+
 CPBlend.blendFunctionNameForParameters = function(fusionHasTransparency, imageAlpha, imageBlendMode, hasMask) {
     var
         funcName = CPBlend.BLEND_MODE_CODENAMES[imageBlendMode] + "Onto";

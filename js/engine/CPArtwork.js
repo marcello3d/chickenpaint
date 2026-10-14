@@ -175,6 +175,13 @@ export default function CPArtwork(_width, _height) {
          */
         strokedRegion = new CPRect(0, 0, 0, 0),
 
+        /**
+         * The area of strokeBuffer that isn't zero (painted on since it was last cleared).
+         *
+         * @type {CPRect}
+         */
+        strokeBufferUsed = new CPRect(0, 0, 0, 0),
+
         brushManager = new CPBrushManager(),
 
         that = this;
@@ -780,6 +787,7 @@ export default function CPArtwork(_width, _height) {
         }
 
         paintUndoArea.union(imageRect);
+        strokeBufferUsed.union(imageRect);
 
         let
             destImage = maskEditingMode ? curLayer.mask : curLayer.image,
@@ -1824,7 +1832,9 @@ export default function CPArtwork(_width, _height) {
         prepareForLayerPaintUndo();
         paintUndoArea.makeEmpty();
 
-        strokeBuffer.clearAll(0);
+        // Only the area painted by previous strokes needs clearing
+        strokeBuffer.clearRect(strokeBufferUsed, 0);
+        strokeBufferUsed.makeEmpty();
         strokedRegion.makeEmpty();
 
         lastX = x;
