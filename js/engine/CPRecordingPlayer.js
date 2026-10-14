@@ -104,6 +104,7 @@ function decodeGreyPNG(png) {
  *                                              default 250; 0 for none)
  * @param {number} [options.keyframeMemory] - Bytes the keyframes may use (default 128MB). Over that, every other one is
  *                                            dropped
+ * @param {boolean} [options.fuseAfterStrokes] - Update the composite after each stroke (default true)
  *
  * @constructor
  */
@@ -140,6 +141,7 @@ export default function CPRecordingPlayer(bytes, options) {
         keyframeInterval = options.keyframeInterval === undefined ? 250 : options.keyframeInterval,
         // Browsers pass a budget that suits the device (see ChickenPaintPlayer)
         keyframeMemory = options.keyframeMemory === undefined ? 128 * 1024 * 1024 : options.keyframeMemory,
+        fuseAfterStrokes = options.fuseAfterStrokes !== false,
         keyframes = [],
         keyframeBytes = 0,
         workSinceKeyframe = 0,
@@ -456,6 +458,15 @@ export default function CPRecordingPlayer(bytes, options) {
             case OP.STROKE_END:
                 inStroke = false;
                 artwork.endStroke();
+                if (fuseAfterStrokes) {
+                    /*
+                     * The composite's dirty area is one rectangle, so compositing several strokes at once (several
+                     * strokes per frame at high speed, or at a checkpoint) would redraw the whole box around them.
+                     * Compositing after each stroke redraws far less (the composite doesn't depend on how it was
+                     * redrawn).
+                     */
+                    artwork.fusionLayers();
+                }
                 break;
 
             case OP.TOOL:
