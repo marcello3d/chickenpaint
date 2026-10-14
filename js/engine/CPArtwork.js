@@ -1171,6 +1171,25 @@ export default function CPArtwork(_width, _height) {
         return redoList.length > 0;
     };
 
+    /**
+     * Describe the undo history (for a drawing recording player, which needs to know whether a copy of the document
+     * without its history replays the same as the original).
+     *
+     * @returns {{undoDepth: int, redoDepth: int, topMergeable: boolean}} topMergeable is true if the next undoable
+     * operation could be merged into the most recent one, or amend it (a move), so that undoing it would also undo the
+     * earlier change.
+     */
+    this.getHistoryInfo = function() {
+        let
+            top = undoList[undoList.length - 1];
+
+        return {
+            undoDepth: undoList.length,
+            redoDepth: redoList.length,
+            topMergeable: !!top && (top.merge !== CPUndo.prototype.merge || top instanceof CPActionMoveSelection)
+        };
+    };
+
     //
     // Undo / Redo
     //

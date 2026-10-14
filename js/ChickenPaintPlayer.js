@@ -33,6 +33,39 @@ function clamp(value, min, max) {
 }
 
 /**
+ * How much memory the replay's keyframes (copies of the drawing kept for seeking) may use on this device.
+ *
+ * Keyframes come on top of the drawing itself (a 1200x1200 drawing with 10 layers is ~60MB plus composite and undo
+ * buffers), and phone browsers close tabs that use much more than a few hundred MB, so phones get a small budget. Over
+ * budget the player keeps fewer, evenly spread keyframes (seeking replays a little more), so a small budget costs
+ * seek speed, never correctness.
+ *
+ * @returns {number} bytes
+ */
+function defaultKeyframeMemory() {
+    const
+        MB = 1024 * 1024;
+
+    let
+        budget = 128 * MB,
+        nav = typeof navigator !== "undefined" ? navigator : {};
+
+    // Chromium tells us the RAM (GB, rounded down to a power of two, at most 8): 16MB per GB, so 32MB on a 2GB phone,
+    // 64MB with 4GB and 128MB with 8GB or more
+    if (nav.deviceMemory > 0) {
+        budget = clamp(nav.deviceMemory * 16 * MB, 16 * MB, 128 * MB);
+    }
+
+    // Safari and Firefox don't, so go by the screen: phones (touch, and a short side under 600 CSS px) get 32MB,
+    // tablets 64MB
+    if (typeof matchMedia === "function" && typeof screen !== "undefined" && matchMedia("(pointer: coarse)").matches) {
+        budget = Math.min(budget, Math.min(screen.width, screen.height) < 600 ? 32 * MB : 64 * MB);
+    }
+
+    return budget;
+}
+
+/**
  * Plays back a drawing recording made by ChickenPaint (with the recordDrawing option) as a timelapse, by replaying it
  * through the painting engine. See docs/recording-format.md.
  *
@@ -53,6 +86,8 @@ function clamp(value, min, max) {
  * @param {function(Error)} [options.onError]
  * @param {function()} [options.onEnd]
  * @param {function(Object)} [options.onDrift] - Called (once) if the replay doesn't match the recorded drawing
+ * @param {number} [options.keyframeMemory] - Memory for seeking keyframes (bytes, default: by device, see
+ *                                            defaultKeyframeMemory())
  *
  * @property {Promise} ready - Resolves when the recording is loaded
  * @property {number} duration - Playback length in ms
@@ -327,10 +362,8 @@ export default function ChickenPaintPlayer(options) {
 
         ms = clamp(Number(ms) || 0, 0, player.duration);
 
-        if (ms < player.currentTime || ms < time) {
-            // Replay from the start
-            player.reset();
-        }
+        // Restores the nearest keyframe (or the start) if that's quicker than replaying from where we are
+        player.seek(ms);
 
         time = ms;
         caughtUp = false;
@@ -418,6 +451,7 @@ export default function ChickenPaintPlayer(options) {
     this.ready = load().then(bytes => {
         player = new CPRecordingPlayer(bytes, {
             maxIdle: options.maxIdle,
+            keyframeMemory: options.keyframeMemory === undefined ? defaultKeyframeMemory() : options.keyframeMemory,
             onDrift: drift => {
                 if (options.onDrift) {
                     options.onDrift(drift);
@@ -452,3 +486,6 @@ export default function ChickenPaintPlayer(options) {
         }
     });
 }
+
+// For hosts that want to know (the module has only a default export, so that the browserify bundle is the function)
+ChickenPaintPlayer.defaultKeyframeMemory = defaultKeyframeMemory;

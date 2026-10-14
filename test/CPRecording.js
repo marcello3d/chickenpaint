@@ -34,7 +34,7 @@ import CPRecorder from "../js/engine/CPRecorder.js";
 import CPRecordingPlayer from "../js/engine/CPRecordingPlayer.js";
 import {save as chiSave, load as chiLoad} from "../js/engine/CPChibiFile.js";
 import {
-	parseRecording, decodeEvents, layerList, rotateRGBA, hashImage, buildLayersFromTable, getLayerTable, layerBitmaps,
+	parseRecording, decodeEvents, layerList, rotateRGBA, hashImage, hashLayers, buildLayersFromTable, getLayerTable, layerBitmaps,
 	START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_SNAPSHOT, START_REFERENCE, SOURCE_CHI, SOURCE_PNG, OP,
 	ENGINE_REVISION, writeChunk
 } from "../js/engine/CPRecordingFormat.js";
@@ -868,6 +868,54 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 			assertSameDocument(asRecorded.artwork, artwork, "legacy " + legacy);
 			// Shows the revision matters
 			assert(misread.drift.length > 0, "legacy " + legacy + " replayed with the other behaviour");
+		}
+	});
+
+	it("should seek with keyframes to the same document as a replay from the start, whatever the memory budget", async function() {
+		function describeState(player) {
+			let
+				a = player.artwork;
+
+			return JSON.stringify([hashLayers(a), getLayerTable(a), layerList(a).indexOf(a.getActiveLayer()), !!a.isEditingMask(),
+				a.getSelection(), player.drift.length]);
+		}
+
+		for (let seed = 1; seed <= 6; seed++) {
+			let
+				random = mulberry32(seed),
+				clock = makeClock(),
+				artwork = newBlankArtwork(50, 40),
+				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+				driver = new Driver(artwork, random, clock);
+
+			driver.run(120);
+
+			let
+				bytes = recorder.getRecording();
+
+			for (let keyframeMemory of [1, 20000, 128 * 1024 * 1024]) {
+				let
+					player = new CPRecordingPlayer(bytes, {keyframeInterval: 1e-9, keyframeMemory: keyframeMemory});
+
+				await player.prepare();
+				player.finish();
+				assert(player.getKeyframeStats().bytes <= keyframeMemory);
+				if (keyframeMemory === 1) {
+					assert.strictEqual(player.getKeyframeStats().count, 0);
+				}
+
+				for (let i = 0; i < 12; i++) {
+					let
+						time = Math.floor(random() * (player.duration + 1)),
+						straight = new CPRecordingPlayer(bytes, {keyframeInterval: 0});
+
+					await straight.prepare();
+					straight.advanceTo(time);
+					player.seek(time);
+					player.advanceTo(time);
+					assert.strictEqual(describeState(player), describeState(straight), "seed " + seed + " budget " + keyframeMemory + " seek to " + time);
+				}
+			}
 		}
 	});
 
