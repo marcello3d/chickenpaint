@@ -107,6 +107,10 @@ every pixel of every layer and mask, and the whole undo history):
 Calls to `CPArtwork` methods made by other methods, or by undo/redo, aren't recorded, only the outermost call. Starting
 to record clears the undo history (a replay can't undo past its start).
 
+A stroke's events are held back until it ends, so a stroke the editor abandons with `abortStroke()` (a touch that turned
+into a two-finger pinch) isn't in the recording at all. If the recording was taken in the middle of that stroke, its
+points are already in it, and abandoning the stroke truncates the recording instead.
+
 ## File format
 
 All integers are unsigned unless noted. Encodings:

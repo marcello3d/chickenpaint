@@ -246,7 +246,12 @@ function Driver(artwork, random, clock) {
 					}
 				}
 				tick(int(20));
-				artwork.endStroke();
+				if (chance(0.15)) {
+					// A touch stroke that turned into a two-finger gesture
+					artwork.abortStroke();
+				} else {
+					artwork.endStroke();
+				}
 			}
 		}],
 		[3, function addLayer() { artwork.addLayer(chance(0.25) ? "group" : "layer"); }],
@@ -846,6 +851,90 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 
 		artwork.undo();
 		assert.strictEqual(artwork.getActiveLayer().mask.getPixel(10, 8), 255, "after undo");
+	});
+
+	it("should leave no trace of an abandoned stroke (pixels, undo and redo history, recording)", async function() {
+		for (let editMask of [false, true]) {
+			let
+				message = editMask ? "on a mask" : "on an image",
+				clock = makeClock(),
+				artwork = newBlankArtwork(64, 48),
+				recorder = new CPRecorder(artwork, {clock: clock});
+
+			artwork.setBrush(new CPBrushInfo({size: 9, alpha: 255, spacing: 0.15, tip: CPBrushInfo.TIP_ROUND_AA, isAA: true}));
+			artwork.setForegroundColor(0x3070f0);
+			if (editMask) {
+				artwork.addLayerMask();
+			}
+
+			// A stroke, undone, so that there's something to redo
+			artwork.beginStroke(5, 5, 1);
+			artwork.continueStroke(30, 20, 1);
+			artwork.endStroke();
+			artwork.undo();
+			clock.advance(100);
+
+			let
+				layer = artwork.getActiveLayer(),
+				pixels = () => (editMask ? layer.mask : layer.image).data,
+				before = pixels().slice(),
+				composite = artwork.fusionLayers().data.slice(),
+				history = artwork.getHistoryInfo();
+
+			assert.strictEqual(history.redoDepth, 1);
+			assert(artwork.beginStroke(10, 40, 1));
+			for (let i = 1; i <= 20; i++) {
+				clock.advance(16);
+				artwork.continueStroke(10 + i * 2, 40 - i, 1);
+				if (i % 5 === 0) {
+					// The GUI repaints during the stroke
+					artwork.fusionLayers();
+				}
+			}
+			assert.notStrictEqual(firstDifference(pixels(), before), -1, message + ": the stroke painted");
+			artwork.abortStroke();
+
+			assert.strictEqual(firstDifference(pixels(), before), -1, message + ": layer pixels");
+			assert.strictEqual(firstDifference(artwork.fusionLayers().data, composite), -1, message + ": composite");
+			assert.deepStrictEqual(artwork.getHistoryInfo(), history, message + ": undo history");
+
+			let
+				bytes = recorder.getRecording(),
+				strokes = 0;
+
+			for (let payload of parseRecording(bytes).sessions[0].eventChunks) {
+				for (let event of decodeEvents(payload)) {
+					if (event.op === OP.STROKE_BEGIN) {
+						strokes++;
+					}
+				}
+			}
+			assert.strictEqual(strokes, 1, message + ": strokes recorded");
+			assert(!recorder.isTruncated(), message + ": truncated");
+
+			let
+				player = await replay(bytes);
+
+			assert.deepStrictEqual(player.drift, [], message + ": drift");
+			assertSameDocument(player.artwork, artwork, message);
+			assertSameUndoHistory(player.artwork, artwork, message);
+		}
+	});
+
+	it("should cut the recording short when a stroke it already holds is abandoned", function() {
+		let
+			artwork = newBlankArtwork(32, 24),
+			recorder = new CPRecorder(artwork, {clock: makeClock()});
+
+		artwork.setBrush(new CPBrushInfo({size: 5, alpha: 255, spacing: 0.15, tip: CPBrushInfo.TIP_ROUND_AA, isAA: true}));
+		artwork.beginStroke(4, 4, 1);
+		artwork.continueStroke(20, 10, 1);
+		// Sent in the middle of the stroke
+		recorder.getRecording();
+		artwork.continueStroke(25, 15, 1);
+		artwork.abortStroke();
+
+		assert(recorder.isTruncated());
 	});
 
 	it("should replay recordings made before that fix as they were made", async function() {

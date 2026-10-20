@@ -1918,7 +1918,42 @@ export default function CPArtwork(_width, _height) {
 
         endPaintingInteraction(false);
     };
-    
+
+    /**
+     * Abandon the painting operation begun by beginStroke() (instead of calling endStroke()): the layer gets back the
+     * pixels it had before the stroke, and nothing is added to the undo history (so the redo history is kept too).
+     */
+    this.abortStroke = function() {
+        if (curBrush == null) {
+            return;
+        }
+
+        // Dabs that haven't been merged onto the layer yet are simply dropped
+        strokedRegion.makeEmpty();
+
+        paintingModes[curBrush.brushMode].endStroke();
+
+        paintUndoArea.clipTo(this.getBounds());
+
+        if (!paintUndoArea.isEmpty()) {
+            let
+                rect = paintUndoArea.clone();
+
+            // The undo buffer still holds the layer as it was when the stroke began (see prepareForLayerPaintUndo())
+            if (maskEditingMode) {
+                curLayer.mask.copyBitmapRect(undoMask, rect.left, rect.top, rect);
+            } else {
+                curLayer.image.copyBitmapRect(undoImage, rect.left, rect.top, rect);
+            }
+
+            paintUndoArea.makeEmpty();
+
+            invalidateLayerPaint(curLayer, rect);
+        }
+
+        endPaintingInteraction(false);
+    };
+
     this.hasAlpha = function() {
         return fusion.hasAlpha();
     };

@@ -118,6 +118,18 @@ for (let eventName of ["mouseDown", "mouseUp"]) {
     };
 }
 
+/**
+ * Deliver the end of a press whose pointer wasn't lifted: a second finger turned the touches into a view gesture, a pen
+ * or mouse took over from a finger, or the browser cancelled the pointer.
+ *
+ * @param {PointerEvent} e
+ * @param {int} button
+ * @param {boolean} keep - False if the press should be abandoned without leaving a trace (a short touch)
+ */
+CPModeStack.prototype.mouseCancel = function(e, button, keep) {
+    this.deliverEvent("mouseCancel", [e, button, keep]);
+};
+
 for (let eventName of ["mouseDrag", "mouseMove"]) {
     CPModeStack.prototype[eventName] = function (e, pressure) {
         this.deliverEvent(eventName, [e, pressure]);
@@ -324,6 +336,14 @@ export default function CPCanvas(controller) {
     CPMode.prototype.mouseMove = CPMode.prototype.paint = CPMode.prototype.mouseDown
         = CPMode.prototype.mouseDrag = CPMode.prototype.mouseUp = CPMode.prototype.keyDown
         = CPMode.prototype.suspend = CPMode.prototype.resume = CPMode.prototype.keyUp = function() {};
+
+    /**
+     * The press ended without its pointer being lifted (see CPModeStack.mouseCancel()). Unless a mode can abandon it
+     * (keep is false), it ends like a release.
+     */
+    CPMode.prototype.mouseCancel = function(e, button, keep) {
+        return this.mouseUp(e, button, 0.0);
+    };
 
     //
     // Default UI Mode when not doing anything: used to start the other modes
@@ -539,6 +559,16 @@ export default function CPCanvas(controller) {
             return true;
         }
     };
+
+    CPFreehandMode.prototype.mouseCancel = function(e, button, keep) {
+        if (this.capture && !keep && button == BUTTON_PRIMARY) {
+            this.capture = false;
+            // No trace: no pixels, no undo (or loss of redo), nothing in the recording
+            artwork.abortStroke();
+            return true;
+        }
+        return this.mouseUp(e, button, 0.0);
+    };
         
     function CPLineMode() {
         var
@@ -635,6 +665,15 @@ export default function CPCanvas(controller) {
 
                 return true;
             }
+        };
+
+        this.mouseCancel = function(e, button, keep) {
+            if (this.capture && !keep && button == BUTTON_PRIMARY) {
+                this.capture = false;
+                that.repaintAll(); // Remove the line preview
+                return true;
+            }
+            return this.mouseUp(e, button, 0.0);
         };
 
         this.paint = function() {
@@ -753,6 +792,19 @@ export default function CPCanvas(controller) {
             }
         };
 
+        this.mouseCancel = function(e, button, keep) {
+            if (this.capture && !keep && button == BUTTON_PRIMARY) {
+                if (dragBezierMode === BEZIER_STATE_INITIAL) {
+                    // Drop the curve that was just begun
+                    this.capture = false;
+                    that.repaintAll();
+                }
+                // Otherwise the control point being placed stays where it was, for the next press to place
+                return true;
+            }
+            return this.mouseUp(e, button, 0.0);
+        };
+
         this.mouseMove = function(e, pressure) {
             if (this.capture) {
                 let
@@ -825,13 +877,15 @@ export default function CPCanvas(controller) {
 
     function CPColorPickerMode() {
         var 
-            mouseButton;
+            mouseButton,
+            colorBeforePress;
 
         this.mouseDown = function(e, button, pressure) {
             if (this.capture) {
                 return true;
             } else if (!key.isPressed("space") && (button == BUTTON_PRIMARY && (!this.transient || e.altKey) || button == BUTTON_SECONDARY)) {
                 mouseButton = button;
+                colorBeforePress = controller.getCurColor();
                 this.capture = true;
 
                 setCursor(CURSOR_CROSSHAIR);
@@ -870,6 +924,13 @@ export default function CPCanvas(controller) {
 
                 return true;
             }
+        };
+
+        this.mouseCancel = function(e, button, keep) {
+            if (this.capture && !keep && button == mouseButton) {
+                controller.setCurColor(colorBeforePress);
+            }
+            return this.mouseUp(e, button, 0.0);
         };
 
         this.enter = function() {
@@ -959,23 +1020,64 @@ export default function CPCanvas(controller) {
     CPPanCanvasMode.prototype.constructor = CPPanCanvasMode;
 
     function CPFloodFillMode() {
+        /**
+         * Where a touch pressed, to fill when it's lifted (so that a touch that turns into a two-finger gesture
+         * fills nothing).
+         */
+        this.pendingFill = null;
     }
     
     CPFloodFillMode.prototype = Object.create(CPMode.prototype);
     CPFloodFillMode.prototype.constructor = CPFloodFillMode;
+
+    CPFloodFillMode.prototype.fill = function(pf) {
+        if (artwork.isPointWithin(pf.x, pf.y)) {
+            artwork.floodFill(pf.x, pf.y);
+            that.repaintAll();
+        }
+    };
 
     CPFloodFillMode.prototype.mouseDown = function(e, button, pressure) {
         if (button == BUTTON_PRIMARY && !e.altKey && !key.isPressed("space") && shouldDrawToThisLayer()) {
             var
                 pf = coordToDocument({x: mouseX, y: mouseY});
 
-            if (artwork.isPointWithin(pf.x, pf.y)) {
-                artwork.floodFill(pf.x, pf.y);
-                that.repaintAll();
+            if (e.pointerType === "touch") {
+                this.pendingFill = pf;
+                this.capture = true;
+            } else {
+                this.fill(pf);
             }
 
             return true;
         }
+    };
+
+    CPFloodFillMode.prototype.mouseUp = function(e, button, pressure) {
+        if (this.pendingFill && button == BUTTON_PRIMARY) {
+            var
+                pf = this.pendingFill;
+
+            this.pendingFill = null;
+            this.capture = false;
+            this.fill(pf);
+
+            return true;
+        }
+    };
+
+    CPFloodFillMode.prototype.mouseCancel = function(e, button, keep) {
+        if (this.pendingFill) {
+            // A press that ends in a gesture never fills, however long it was
+            this.pendingFill = null;
+            this.capture = false;
+            return true;
+        }
+    };
+
+    CPFloodFillMode.prototype.leave = function() {
+        CPMode.prototype.leave.call(this);
+        this.pendingFill = null;
     };
 
     function CPRectSelectionMode() {
@@ -1031,6 +1133,17 @@ export default function CPCanvas(controller) {
             that.repaintAll();
 
             return true;
+        };
+
+        this.mouseCancel = function(e, button, keep) {
+            if (this.capture && !keep && button == selectingButton) {
+                curRect.makeEmpty();
+                this.capture = false;
+                selectingButton = -1;
+                that.repaintAll();
+                return true;
+            }
+            return this.mouseUp(e, button, 0.0);
         };
 
         this.mouseUp = function (e, button, pressure) {
@@ -1698,6 +1811,21 @@ export default function CPCanvas(controller) {
             }
         };
 
+        this.mouseCancel = function(e, button, keep) {
+            if (this.capture && button == rotateButton && !dragged) {
+                // Not a click (which resets the rotation)
+                this.capture = false;
+                rotateButton = -1;
+
+                if (this.transient && !(key.isPressed("space") && key.alt)) {
+                    modeStack.pop();
+                }
+
+                return true;
+            }
+            return this.mouseUp(e, button, 0.0);
+        };
+
         this.keyUp = function(e) {
             if (this.transient && rotateButton != BUTTON_WHEEL && e.keyCode == 32 /* Space */) {
                 setCursor(CURSOR_DEFAULT);
@@ -2165,17 +2293,172 @@ export default function CPCanvas(controller) {
         }
     }
 
+    const
+        /**
+         * A touch press younger than this when a second finger lands (or when the browser cancels it) is abandoned
+         * without a trace: it was the first finger of a pinch, or a resting finger. An older one is kept, as if the
+         * finger had been lifted where it is.
+         */
+        TOUCH_DISCARD_MSEC = 500,
+
+        /**
+         * A pinch snaps to 100% zoom when it comes within this factor of it.
+         */
+        PINCH_SNAP_TO_100 = 1.06;
+
     let
-        canvasClientRect;
+        canvasClientRect,
+
+        /**
+         * The pointer whose press the modes are handling (only its moves and release reach them), or null.
+         */
+        pressPointerId = null,
+        pressPointerType = null,
+        pressStartTime = 0,
+
+        /**
+         * The canvas coordinates of the touches that are down on the canvas, by pointerId (palms during a pen or mouse
+         * press aren't tracked).
+         *
+         * @type {Map<int, {x: number, y: number}>}
+         */
+        touches = new Map(),
+
+        /**
+         * Set when a second finger lands: from then until every finger has lifted, touches pinch and pan the view and
+         * never draw (not even a finger left down after the others lift).
+         */
+        touchesAreGesture = false,
+
+        /**
+         * The pinch in progress while two fingers are down: the distance between them and the zoom when it (re)started,
+         * and the document point that was under their midpoint (it stays under it, so moving both fingers pans).
+         *
+         * @type {?{distance: number, zoom: number, docPoint: {x: number, y: number}}}
+         */
+        viewGesture = null;
+
+    function pointerToCanvas(e) {
+        return {x: e.clientX - canvasClientRect.left, y: e.clientY - canvasClientRect.top};
+    }
+
+    function getTwoTouches() {
+        let
+            it = touches.values();
+
+        return [it.next().value, it.next().value];
+    }
+
+    function beginViewGesture() {
+        let
+            [a, b] = getTwoTouches();
+
+        viewGesture = {
+            distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+            zoom: zoom,
+            docPoint: coordToDocument({x: (a.x + b.x) / 2, y: (a.y + b.y) / 2})
+        };
+    }
+
+    function updateViewGesture() {
+        let
+            [a, b] = getTwoTouches(),
+            newZoom = viewGesture.zoom * Math.hypot(b.x - a.x, b.y - a.y) / viewGesture.distance;
+
+        newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+
+        if (newZoom < PINCH_SNAP_TO_100 && newZoom > 1 / PINCH_SNAP_TO_100) {
+            newZoom = 1;
+        }
+
+        // Where the document point would be with the new zoom and no offset
+        let
+            noOffset = new CPTransform();
+
+        noOffset.scale(newZoom, newZoom);
+        noOffset.rotate(canvasRotation);
+
+        let
+            p = noOffset.getTransformedPoint(viewGesture.docPoint);
+
+        zoom = newZoom;
+        that.setOffset(Math.round((a.x + b.x) / 2 - p.x), Math.round((a.y + b.y) / 2 - p.y));
+    }
+
+    function beginPress(e) {
+        pressPointerId = e.pointerId;
+        pressPointerType = e.pointerType;
+        pressStartTime = performance.now();
+    }
+
+    /**
+     * True if the event is from the pointer whose press the modes are handling. With no press in progress, mouse and
+     * pen events count (hovering, or a press that began outside the canvas), touches don't.
+     */
+    function isPressPointer(e) {
+        return pressPointerId !== null ? e.pointerId === pressPointerId : e.pointerType !== "touch";
+    }
+
+    /**
+     * End the press without its pointer being lifted. A touch press younger than TOUCH_DISCARD_MSEC is abandoned
+     * (a stroke leaves no trace), anything else ends as if the pointer had been lifted where it is.
+     *
+     * @param {PointerEvent} e - The event that ended it
+     */
+    function cancelPress(e) {
+        let
+            keep = pressPointerType !== "touch" || performance.now() - pressStartTime >= TOUCH_DISCARD_MSEC;
+
+        pressPointerId = null;
+        pressPointerType = null;
+        wacomPenDown = false;
+
+        for (let button of [BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_WHEEL]) {
+            if (mouseDown[button]) {
+                mouseDown[button] = false;
+                modeStack.mouseCancel(e, button, keep);
+            }
+        }
+    }
+
+    /**
+     * Forget a touch that has lifted or was cancelled.
+     */
+    function removeTouch(e) {
+        if (e.pointerType === "touch" && touches.delete(e.pointerId)) {
+            if (touches.size === 0) {
+                // The gesture is over, the next touch can draw again
+                touchesAreGesture = false;
+                viewGesture = null;
+            } else if (viewGesture) {
+                if (touches.size >= 2) {
+                    // Carry on with the fingers that are left
+                    beginViewGesture();
+                } else {
+                    viewGesture = null;
+                }
+            }
+        }
+    }
 
     function handlePointerMove(e) {
         // Use the cached position of the canvas on the page if possible
         if (!canvasClientRect) {
             canvasClientRect = canvas.getBoundingClientRect();
         }
-        
-        if (sawPen && e.pointerType === "touch") {
-            // Palm rejection for devices that support pens
+
+        if (e.pointerType === "touch" && touches.has(e.pointerId)) {
+            touches.set(e.pointerId, pointerToCanvas(e));
+
+            if (viewGesture) {
+                updateViewGesture();
+            }
+        }
+
+        if (!isPressPointer(e)) {
+            /* Only the pointer that began the press draws: not a second finger, the fingers of a pinch, a palm during a
+             * pen stroke (palm rejection), or a touch on a device that has a pen.
+             */
             return;
         }
 
@@ -2234,6 +2517,16 @@ export default function CPCanvas(controller) {
             }
         }
 
+        // A mouse or pen press that began outside the canvas (or one that ended there) is a press all the same
+        if (mouseDown[BUTTON_PRIMARY] || mouseDown[BUTTON_SECONDARY] || mouseDown[BUTTON_WHEEL]) {
+            if (pressPointerId === null) {
+                beginPress(e);
+            }
+        } else if (pressPointerId === e.pointerId) {
+            pressPointerId = null;
+            pressPointerType = null;
+        }
+
         if (isDragging) {
             modeStack.mouseDrag(e, pressure);
         } else {
@@ -2247,6 +2540,16 @@ export default function CPCanvas(controller) {
 
     // Called when all mouse/pointer buttons are released
     function handlePointerUp(e) {
+        removeTouch(e);
+
+        if (!isPressPointer(e)) {
+            // Not the pointer that's pressing: a second finger, the fingers of a pinch, or a palm during a pen stroke
+            return;
+        }
+
+        pressPointerId = null;
+        pressPointerType = null;
+
         mouseDown[BUTTON_PRIMARY] = false;
         mouseDown[BUTTON_SECONDARY] = false;
         mouseDown[BUTTON_WHEEL] = false;
@@ -2256,16 +2559,78 @@ export default function CPCanvas(controller) {
         canvas.releasePointerCapture(e.pointerId);
     }
 
+    // The browser took the pointer away (e.g. for a system gesture, or a touch it decided was a palm)
+    function handlePointerCancel(e) {
+        removeTouch(e);
+
+        if (pressPointerId !== null && e.pointerId === pressPointerId) {
+            cancelPress(e);
+        }
+    }
+
     // Called when the first button on the pointer is depressed / pen touches the surface
     function handlePointerDown(e) {
-        if (sawPen && e.pointerType === "touch") {
-            // Palm rejection for devices that support pens
-            return;
+        canvasClientRect = canvas.getBoundingClientRect();
+
+        if (e.pointerType === "touch") {
+            if (pressPointerId !== null && pressPointerType !== "touch") {
+                // Palm rejection: a touch during a pen (or mouse) press is ignored, and doesn't end it
+                return;
+            }
+
+            if (e.isPrimary && touches.size > 0) {
+                // The first finger of new touches, so we missed the end of the previous ones
+                if (pressPointerType === "touch") {
+                    cancelPress(e);
+                }
+                touches.clear();
+                touchesAreGesture = false;
+                viewGesture = null;
+            }
+
+            touches.set(e.pointerId, pointerToCanvas(e));
+
+            if (touches.size >= 2) {
+                if (!touchesAreGesture) {
+                    // A second finger: the fingers pinch and pan until they've all lifted, and nothing draws
+                    touchesAreGesture = true;
+
+                    if (pressPointerId !== null) {
+                        cancelPress(e);
+                    }
+                }
+
+                beginViewGesture();
+                return;
+            }
+
+            if (touchesAreGesture || sawPen) {
+                // A finger left down after a pinch never draws, nor does a touch on a device with a pen (palm rejection)
+                return;
+            }
+        } else {
+            if (pressPointerId !== null && pressPointerId !== e.pointerId) {
+                if (pressPointerType !== "touch") {
+                    // Already pressed with another mouse or pen
+                    return;
+                }
+
+                // A pen or mouse takes over from a finger
+                cancelPress(e);
+            }
+
+            if (touches.size > 0) {
+                // Fingers that are still down are ignored until they've all lifted
+                touchesAreGesture = true;
+                viewGesture = null;
+            }
+
+            if (e.pointerType === "pen") {
+                sawPen = true;
+            }
         }
 
         canvas.setPointerCapture(e.pointerId);
-
-        canvasClientRect = canvas.getBoundingClientRect();
 
         // Store these globally for the event handlers to refer to
         mouseX = e.clientX - canvasClientRect.left;
@@ -2278,6 +2643,8 @@ export default function CPCanvas(controller) {
         mouseDown[BUTTON_WHEEL] = false;
 
         mouseDown[e.button] = true;
+
+        beginPress(e);
 
         modeStack.mouseDown(e, e.button, getPointerPressure(e));
     }
@@ -2624,6 +2991,7 @@ export default function CPCanvas(controller) {
     canvas.addEventListener("pointerdown", handlePointerDown);
     canvas.addEventListener("pointermove", handlePointerMove);
     canvas.addEventListener("pointerup", handlePointerUp);
+    canvas.addEventListener("pointercancel", handlePointerCancel);
     canvas.addEventListener("wheel", handleMouseWheel);
     
     document.addEventListener("keydown", handleKeyDown);

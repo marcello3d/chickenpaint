@@ -155,6 +155,13 @@ export default function CPRecorder(artwork, options) {
         depth = 0,
         nextId = 1,
         inStroke = false,
+        /**
+         * The events of the stroke in progress, each {event, time}, held back until the stroke ends so that a stroke
+         * the editor abandons (abortStroke()) leaves no trace. Null once they're written (or if there's no stroke).
+         *
+         * @type {?Object[]}
+         */
+        pendingStroke = null,
         toolState = {},
         toolTexture,
         knownClip = artwork.getClipboard(),
@@ -216,12 +223,45 @@ export default function CPRecorder(artwork, options) {
     }
 
     function emit(event) {
+        // Keep the events in order: anything recorded during a stroke follows the points it already has
+        flushPendingStroke();
+        write(event, clock());
+    }
+
+    /**
+     * Record an event of the stroke in progress.
+     */
+    function emitStrokeEvent(event) {
+        if (pendingStroke) {
+            pendingStroke.push({event: event, time: clock()});
+        } else {
+            write(event, clock());
+        }
+    }
+
+    function flushPendingStroke() {
+        if (pendingStroke) {
+            let
+                events = pendingStroke;
+
+            pendingStroke = null;
+            for (let e of events) {
+                write(e.event, e.time);
+            }
+        }
+    }
+
+    /**
+     * @param {Object} event
+     * @param {number} time - Clock time of the event
+     */
+    function write(event, time) {
         if (truncated) {
             return;
         }
 
         let
-            t = Math.max(lastTime, Math.round(clock() - startTime));
+            t = Math.max(lastTime, Math.round(time - startTime));
 
         event.dt = t - lastTime;
         lastTime = t;
@@ -391,7 +431,9 @@ export default function CPRecorder(artwork, options) {
                 result = original(q.x / COORD_SCALE, q.y / COORD_SCALE, q.p / 255);
 
             if (result) {
-                emit({op: OP.STROKE_BEGIN, x: q.x, y: q.y, p: q.p, seed: seed});
+                flushPendingStroke();
+                pendingStroke = [];
+                emitStrokeEvent({op: OP.STROKE_BEGIN, x: q.x, y: q.y, p: q.p, seed: seed});
                 inStroke = true;
             }
 
@@ -407,7 +449,7 @@ export default function CPRecorder(artwork, options) {
                 q = quantizePoint(x, y, pressure);
 
             // (Even a repeat of the previous point isn't a no-op: the brush spacing depends on the last dab's pressure)
-            emit({op: OP.STROKE_POINT, x: q.x, y: q.y, p: q.p});
+            emitStrokeEvent({op: OP.STROKE_POINT, x: q.x, y: q.y, p: q.p});
 
             return original(q.x / COORD_SCALE, q.y / COORD_SCALE, q.p / 255);
         },
@@ -420,6 +462,24 @@ export default function CPRecorder(artwork, options) {
                 inStroke = false;
                 emit({op: OP.STROKE_END});
                 maybeCheckpoint();
+            }
+
+            return result;
+        },
+
+        abortStroke(original) {
+            let
+                result = original();
+
+            if (inStroke) {
+                inStroke = false;
+                if (pendingStroke) {
+                    // The layer is back as it was, so as far as the replay is concerned the stroke never happened
+                    pendingStroke = null;
+                } else {
+                    // Its points are already in the recording (it was sent mid-stroke), which has no way to take them back
+                    truncate("stroke abandoned after it was recorded");
+                }
             }
 
             return result;
@@ -772,6 +832,9 @@ export default function CPRecorder(artwork, options) {
      * @returns {?Uint8Array} The recording, or null if it would exceed the size limit
      */
     this.getRecording = function(saveOptions) {
+        // A stroke in progress is part of the drawing being sent
+        flushPendingStroke();
+
         let
             rotation = (saveOptions && saveOptions.rotation) || 0,
             out = new ByteWriter(1024 * 1024),
@@ -829,6 +892,7 @@ export default function CPRecorder(artwork, options) {
      */
     this.detach = function() {
         if (attached) {
+            flushPendingStroke();
             attached = false;
             for (let name of Object.keys(originals)) {
                 artwork[name] = originals[name];
