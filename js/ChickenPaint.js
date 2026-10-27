@@ -280,6 +280,9 @@ function createDrawingTools() {
  * @typedef {Object} ChickenPaintOptions
  *
  * @property {Element} uiElem   - DOM element to insert ChickenPaint into
+ * @property {boolean} [fillContainer] - Outside full-screen mode, make the editor exactly as tall as uiElem (whose
+ *                                     height the page must set) instead of a height derived from the window and
+ *                                     capped at 850px
  *
  * @property {Function} [onLoaded] - Callback to call when artwork loading completes
  *
@@ -1427,7 +1430,7 @@ export default function ChickenPaint(options) {
 
         that.artwork.on("editModeChanged", onEditModeChanged);
 
-        mainGUI = new CPMainGUI(that, uiElem);
+        mainGUI = new CPMainGUI(that, uiElem, {fillContainer: !!options.fillContainer});
         
         that.emitEvent("fullScreen", [isFullScreen]);
         that.emitEvent("smallScreen", [smallScreenMode]);

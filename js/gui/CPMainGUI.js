@@ -28,7 +28,16 @@ import CPMainMenu from "./CPMainMenu.js";
 
 import EventEmitter from "wolfy87-eventemitter";
 
-export default function CPMainGUI(controller, uiElem) {
+/**
+ * @param {ChickenPaint} controller
+ * @param {Element} uiElem
+ * @param {Object} [opts]
+ * @param {boolean} [opts.fillContainer] - Size the editor to uiElem's own height (which the page sets) instead of
+ *                                         deriving it from the window height, and follow changes to it
+ */
+export default function CPMainGUI(controller, uiElem, opts) {
+    opts = opts || {};
+
     let
         lowerArea = document.createElement("div"),
         canvas = new CPCanvas(controller),
@@ -96,6 +105,8 @@ export default function CPMainGUI(controller, uiElem) {
 
         if (fullScreenMode) {
             newHeight = windowHeight - menuBarHeight;
+        } else if (opts.fillContainer && uiElem.clientHeight > 0) {
+            newHeight = Math.max(uiElem.clientHeight - menuBarHeight, 300);
         } else {
             newHeight = Math.min(Math.max((windowHeight - menuBarHeight - 65), 500), 850);
         }
@@ -120,6 +131,19 @@ export default function CPMainGUI(controller, uiElem) {
     });
 
     window.addEventListener("resize", this.resize.bind(this));
+
+    if (opts.fillContainer && typeof ResizeObserver !== "undefined") {
+        let
+            lastContainerHeight = uiElem.clientHeight;
+
+        // The container can change height without a window resize (e.g. the page's own layout changing)
+        new ResizeObserver(() => {
+            if (uiElem.clientHeight !== lastContainerHeight) {
+                lastContainerHeight = uiElem.clientHeight;
+                that.resize();
+            }
+        }).observe(uiElem);
+    }
 
     controller.on("fullScreen", fullscreen => this.setFullScreenMode(fullscreen));
     
