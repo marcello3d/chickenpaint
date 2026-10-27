@@ -2441,6 +2441,24 @@ export default function CPCanvas(controller) {
         }
     }
 
+    /**
+     * The coalesced samples of a pointermove (oldest first, ending with the event's own position), or null if the
+     * browser has none beyond the event itself. Predicted events are not used.
+     *
+     * @param {PointerEvent} e
+     * @return {PointerEvent[]|null}
+     */
+    function coalescedSamples(e) {
+        if (typeof e.getCoalescedEvents !== "function") {
+            return null;
+        }
+
+        let
+            samples = e.getCoalescedEvents();
+
+        return samples && samples.length > 1 ? samples : null;
+    }
+
     function handlePointerMove(e) {
         // Use the cached position of the canvas on the page if possible
         if (!canvasClientRect) {
@@ -2476,6 +2494,9 @@ export default function CPCanvas(controller) {
             
             isDragging = e.buttons !== 0,
             pressure = isDragging ? getPointerPressure(e) : 0;
+
+        let
+            buttonsChanged = false;
         
 		// Did any of our buttons change state?
         if (((e.buttons & FLAG_PRIMARY) !== 0) != mouseDown[BUTTON_PRIMARY]) {
@@ -2489,6 +2510,7 @@ export default function CPCanvas(controller) {
             }
 
             mouseDown[BUTTON_PRIMARY] = !mouseDown[BUTTON_PRIMARY];
+            buttonsChanged = true;
 
             if (mouseDown[BUTTON_PRIMARY]) {
                 modeStack.mouseDown(e, BUTTON_PRIMARY, pressure);
@@ -2499,6 +2521,7 @@ export default function CPCanvas(controller) {
 
         if (((e.buttons & FLAG_SECONDARY) !== 0) != mouseDown[BUTTON_SECONDARY]) {
             mouseDown[BUTTON_SECONDARY] = !mouseDown[BUTTON_SECONDARY];
+            buttonsChanged = true;
 
             if (mouseDown[BUTTON_SECONDARY]) {
                 modeStack.mouseDown(e, BUTTON_SECONDARY, pressure);
@@ -2509,6 +2532,7 @@ export default function CPCanvas(controller) {
 
         if (((e.buttons & FLAG_WHEEL) !== 0) != mouseDown[BUTTON_WHEEL]) {
             mouseDown[BUTTON_WHEEL] = !mouseDown[BUTTON_WHEEL];
+            buttonsChanged = true;
 
             if (mouseDown[BUTTON_WHEEL]) {
                 modeStack.mouseDown(e, BUTTON_WHEEL, pressure);
@@ -2528,7 +2552,25 @@ export default function CPCanvas(controller) {
         }
 
         if (isDragging) {
-            modeStack.mouseDrag(e, pressure);
+            /* The browser hands us one pointermove per frame, with the samples in between (an Apple Pencil gives
+             * four per frame) in getCoalescedEvents(): drag through each in order so fast curves stay round. The
+             * last sample is this event's own, so it isn't repeated. A move that just pressed a button began the
+             * stroke at the latest point, so it doesn't step back through the earlier ones. The modes still get
+             * the event itself, for its modifier keys; the sample's position and pressure go through
+             * mouseX / mouseY and the pressure argument.
+             */
+            const
+                samples = buttonsChanged ? null : coalescedSamples(e);
+
+            if (samples) {
+                for (let sample of samples) {
+                    mouseX = sample.clientX - canvasClientRect.left;
+                    mouseY = sample.clientY - canvasClientRect.top;
+                    modeStack.mouseDrag(e, getPointerPressure(sample));
+                }
+            } else {
+                modeStack.mouseDrag(e, pressure);
+            }
         } else {
             modeStack.mouseMove(e, pressure);
         }

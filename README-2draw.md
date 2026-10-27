@@ -23,4 +23,5 @@ icon SVGs change (or use `chickenpaint.Dockerfile`).
 - The save response check accepts leading whitespace before `CHIBIOK`.
 - Drawing recording and timelapse playback (branch `recording`, meant for upstream; see `docs/recording-format.md`).
   2draw.net stores the uploaded `recording` field as `<entry>-v<version>.chiani`.
+- Pen, touch and mouse drags go through every coalesced pointer sample (`getCoalescedEvents()`), not one per frame.
 - `scripts/build-2draw.mjs` and this file.
