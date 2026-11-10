@@ -43,6 +43,7 @@ import CPResourceLoader from "./engine/CPResourceLoader.js";
 import CPResourceSaver from "./engine/CPResourceSaver.js";
 import {save as chiSave} from "./engine/CPChibiFile.js";
 import CPRecorder from "./engine/CPRecorder.js";
+import CPRecordingPlayer from "./engine/CPRecordingPlayer.js";
 import {SOURCE_CHI, SOURCE_PNG} from "./engine/CPRecordingFormat.js";
 
 import CPSplashScreen from "./gui/CPSplashScreen.js";
@@ -312,6 +313,9 @@ function createDrawingTools() {
  *                                          (see docs/recording-format.md).
  * @property {string} [loadRecordingUrl]    - URL of the recording of the drawing being loaded, to continue it. If it
  *                                          can't be loaded, nothing is recorded (rather than starting over).
+ * @property {boolean} [rebuildFromRecording] - With loadRecordingUrl and no image or .chi: rebuild the drawing by
+ *                                          replaying the recording, then carry it on (a copy kept on the device as a
+ *                                          recording, getRecordingPieces)
  * @property {string} [recordingSourceUrl]  - A permanent URL of the file being loaded (loadChibiFileUrl or loadImageUrl),
  *                                          which a recording may refer to instead of storing a copy of the layers.
  * @property {boolean} [allowDownload]      - Allow the drawing to be saved to the user's computer
@@ -1157,6 +1161,28 @@ export default function ChickenPaint(options) {
     };
 
     /**
+     * The recording so far as append-only pieces (CPRecorder.getPieces), for a copy of the drawing kept piece by
+     * piece: head + every sealed piece + tail is the recording, which rebuildFromRecording opens again. Null when not
+     * recording, or when the recording has stopped early or grown too large (it would not rebuild the drawing).
+     *
+     * @param {int} from - The pieces sealed before this one are already kept
+     * @returns {?{head: ?Uint8Array, sealed: Uint8Array[], count: int, tail: Uint8Array, rotation: int}}
+     */
+    this.getRecordingPieces = function(from) {
+        if (!recorder) {
+            return null;
+        }
+        let
+            rotation = canvas ? canvas.getRotation90() : 0,
+            pieces = recorder.getPieces(from, {rotation: rotation});
+
+        if (pieces) {
+            pieces.rotation = rotation;
+        }
+        return pieces;
+    };
+
+    /**
      * A copy of the drawing as it is right now, for the page to keep on the device and open again later: the layers
      * as a .chi (loadChibiFileUrl), the recording so far (loadRecordingUrl; null when not recording or too large) and
      * the canvas rotation (the rotation option). The layers and the recording are taken at the same moment, so
@@ -1538,7 +1564,47 @@ export default function ChickenPaint(options) {
     
     preferences.on("toolbarStyle", newStyle => this.emitEvent("toolbarStyleChange", [newStyle]));
 
-    if (options.loadImageUrl || options.loadChibiFileUrl) {
+    if (options.rebuildFromRecording && options.loadRecordingUrl && !options.loadImageUrl && !options.loadChibiFileUrl) {
+        let
+            splash = $('<div class="chickenpaint-splash-message">' + _("Loading drawing...") + '</div>').appendTo(uiElem),
+            fail = function(e) {
+                splash.remove();
+                console.error(e);
+                if (options.onLoadFailure) {
+                    options.onLoadFailure(e);
+                }
+            };
+
+        fetch(options.loadRecordingUrl)
+            .then(res => {
+                if (!res.ok) {
+                    throw new Error("recording download failed: " + res.status);
+                }
+                return res.arrayBuffer();
+            })
+            .then(buffer => {
+                let
+                    bytes = new Uint8Array(buffer),
+                    player = new CPRecordingPlayer(bytes, {keyframeMemory: 0});
+
+                return Promise.resolve(player.prepare()).then(() => {
+                    let
+                        artwork = player.finishForEditing();
+
+                    if (!artwork) {
+                        throw new Error("the recording has no drawing");
+                    }
+                    splash.remove();
+                    that.artwork = artwork;
+                    startRecording(bytes);
+                    startMainGUI(null, options.rotation || player.getFinalSize().rotation);
+                    if (options.onLoaded) {
+                        options.onLoaded(this);
+                    }
+                });
+            })
+            .catch(fail);
+    } else if (options.loadImageUrl || options.loadChibiFileUrl) {
         let
             loader = new CPResourceLoader(options);
 

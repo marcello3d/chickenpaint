@@ -24,7 +24,11 @@ icon SVGs change (or use `chickenpaint.Dockerfile`).
 - Drawing recording and timelapse playback (branch `recording`, meant for upstream; see `docs/recording-format.md`).
   2draw.net stores the uploaded `recording` field as `<entry>-v<version>.chiani`.
 - Pen, touch and mouse drags go through every coalesced pointer sample (`getCoalescedEvents()`), not one per frame.
-- For 2draw's copy of a drawing on the device: `getDeviceCopy()` (the layers as a .chi, taken without yielding, plus
+- For 2draw's copy of a drawing on the device, kept as its recording, append-only: `getRecordingPieces(from)` (the
+  fixed head, the event chunks sealed since, the current tail; `CPRecorder.getPieces`) and `rebuildFromRecording`
+  (open a drawing by replaying its recording, then carry the recording on; the player ends a stroke a session left
+  under way, as the editor does when it reopens one). As a fallback for a recording that stopped early:
+  `getDeviceCopy()` (the layers as a .chi, taken without yielding, plus
   the recording so far and the rotation), the `unsavedWarning: false` option (the page warns itself) and `onSent`
   (awaited, two seconds at most, before going on to `postUrl`).
 - `scripts/build-2draw.mjs` and this file.

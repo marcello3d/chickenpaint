@@ -408,6 +408,10 @@ export default function CPRecordingPlayer(bytes, options) {
             start = session.start,
             artwork = null;
 
+        // A session can end with a stroke under way (a copy saved mid-stroke and opened again): the editor that
+        // opened it ended that stroke, so the replay does too
+        endOpenStroke();
+
         currentSession = session;
 
         switch (start.kind) {
@@ -1207,6 +1211,31 @@ export default function CPRecordingPlayer(bytes, options) {
      */
     this.finish = function() {
         this.advanceTo(Infinity);
+    };
+
+    function endOpenStroke() {
+        if (inStroke && that.artwork) {
+            inStroke = false;
+            that.artwork.endStroke();
+        }
+    }
+
+    /**
+     * Replay everything, end a stroke the recording leaves under way, and hand over the drawing: the artwork, for an
+     * editor to carry on with (the player lets go of it).
+     *
+     * @returns {CPArtwork}
+     */
+    this.finishForEditing = function() {
+        this.advanceTo(Infinity);
+        endOpenStroke();
+
+        let
+            artwork = that.artwork;
+
+        setArtwork(null);
+
+        return artwork;
     };
 
     /**

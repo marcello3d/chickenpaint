@@ -27,7 +27,7 @@ import {encodePNG} from "../util/CPPNG.js";
 import {
     OP, BRUSH_FIELDS, COORD_SCALE,
     START_BLANK, START_CONTINUE, START_CONTINUE_FLAT, START_REFERENCE, START_SNAPSHOT, SOURCE_PNG,
-    CHUNK_HEADER, CHUNK_SESSION, ENGINE_REVISION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END,
+    CHUNK_HEADER, CHUNK_SESSION, ENGINE_REVISION, CHUNK_SNAPSHOT, CHUNK_EVENTS, CHUNK_SESSION_END, CHUNK_END, MAGIC,
     EventChunkWriter, writeChunk, finishRecording, parseRecording, encodeHeader, encodeSessionStart, encodeSessionEnd,
     getLayerTable, layerList, forEachLayer, hashLayers, hashComposite, hashImage, rotateRGBA
 } from "./CPRecordingFormat.js";
@@ -821,6 +821,29 @@ export default function CPRecorder(artwork, options) {
         };
     }
 
+    /**
+     * This session's end, as of now (its counts and hashes).
+     */
+    function writeSessionEnd(out, rotation) {
+        let
+            fusion = artwork.fusionLayers(),
+            rotated = rotateRGBA(fusion.width, fusion.height, fusion.data, rotation);
+
+        writeChunk(out, CHUNK_SESSION_END, encodeSessionEnd({
+            eventCount: eventCount,
+            durationMs: Math.max(lastTime, Math.round(clock() - startTime)),
+            truncated: truncated,
+            simple: artwork.isSimpleDrawing(),
+            rotation: rotation,
+            compositeHash: hashImage(fusion.width, fusion.height, fusion.data),
+            imageHash: hashImage(rotated.width, rotated.height, rotated.data),
+            layersHash: hashLayers(artwork),
+            width: artwork.width,
+            height: artwork.height,
+            layerCount: layerList(artwork).length
+        }));
+    }
+
     // == Public API ===================================================================================================
 
     /**
@@ -837,9 +860,7 @@ export default function CPRecorder(artwork, options) {
 
         let
             rotation = (saveOptions && saveOptions.rotation) || 0,
-            out = new ByteWriter(1024 * 1024),
-            fusion = artwork.fusionLayers(),
-            rotated = rotateRGBA(fusion.width, fusion.height, fusion.data, rotation);
+            out = new ByteWriter(1024 * 1024);
 
         if (previousBody) {
             out.bytes(previousBody);
@@ -860,24 +881,86 @@ export default function CPRecorder(artwork, options) {
             writeChunk(out, CHUNK_EVENTS, chunk.toPayload());
         }
 
-        writeChunk(out, CHUNK_SESSION_END, encodeSessionEnd({
-            eventCount: eventCount,
-            durationMs: Math.max(lastTime, Math.round(clock() - startTime)),
-            truncated: truncated,
-            simple: artwork.isSimpleDrawing(),
-            rotation: rotation,
-            compositeHash: hashImage(fusion.width, fusion.height, fusion.data),
-            imageHash: hashImage(rotated.width, rotated.height, rotated.data),
-            layersHash: hashLayers(artwork),
-            width: artwork.width,
-            height: artwork.height,
-            layerCount: layerList(artwork).length
-        }));
+        writeSessionEnd(out, rotation);
 
         let
             result = finishRecording(out.view());
 
         return result.length <= maxBytes ? result : null;
+    };
+
+    /**
+     * The recording so far as append-only pieces, for a copy kept piece by piece (2draw keeps one on the device, and
+     * later in the cloud). Seals the events so far into a chunk, then gives:
+     *
+     * - head (when from is 0): the magic, the previous recording (or the header), this session's start and its
+     *   snapshot: fixed for the session;
+     * - sealed: the event chunks from the from-th on, each framed, never changing once made (count: how many there
+     *   are now, the next from);
+     * - tail: this session's end (as of now) and the end chunk.
+     *
+     * head + every sealed piece + tail is the file getRecording() makes now. Null when the recording has stopped
+     * early (truncated) or is over the size limit: it would not rebuild the drawing.
+     *
+     * @param {int} from
+     * @param {Object} [saveOptions] - As getRecording
+     * @returns {?{head: ?Uint8Array, sealed: Uint8Array[], count: int, tail: Uint8Array}}
+     */
+    this.getPieces = function(from, saveOptions) {
+        flushPendingStroke();
+
+        if (truncated) {
+            return null;
+        }
+        if (chunk.count > 0) {
+            let
+                payload = chunk.toPayload();
+
+            finishedChunks.push(payload);
+            finishedBytes += payload.length;
+            chunk = new EventChunkWriter();
+        }
+
+        let
+            rotation = (saveOptions && saveOptions.rotation) || 0,
+            head = null,
+            sealed = [],
+            total = (previousBody ? previousBody.length : 0) + finishedBytes;
+
+        if (total > maxBytes) {
+            return null;
+        }
+        if (!from) {
+            let
+                out = new ByteWriter(64 * 1024);
+
+            out.bytes(MAGIC);
+            if (previousBody) {
+                out.bytes(previousBody);
+            } else {
+                writeChunk(out, CHUNK_HEADER, encodeHeader({Software: "ChickenPaint"}));
+            }
+            writeChunk(out, CHUNK_SESSION, encodeSessionStart(start));
+            if (start.kind === START_SNAPSHOT) {
+                writeChunk(out, CHUNK_SNAPSHOT, encodeSnapshotPayload());
+            }
+            head = out.view().slice();
+        }
+        for (let i = from || 0; i < finishedChunks.length; i++) {
+            let
+                out = new ByteWriter(finishedChunks[i].length + 16);
+
+            writeChunk(out, CHUNK_EVENTS, finishedChunks[i]);
+            sealed.push(out.view().slice());
+        }
+
+        let
+            tail = new ByteWriter(256);
+
+        writeSessionEnd(tail, rotation);
+        writeChunk(tail, CHUNK_END, new Uint8Array(0));
+
+        return {head: head, sealed: sealed, count: finishedChunks.length, tail: tail.view().slice()};
     };
 
     /**

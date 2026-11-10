@@ -1404,3 +1404,88 @@ describe("CPRecorder and CPRecordingPlayer", function() {
 		assert(ops.has(OP.CHECKPOINT));
 	});
 });
+
+describe("CPRecorder.getPieces (a recording kept piece by piece)", function() {
+	function join(pieces) {
+		let
+			total = pieces.reduce((n, p) => n + p.length, 0),
+			out = new Uint8Array(total),
+			at = 0;
+
+		for (let p of pieces) {
+			out.set(p, at);
+			at += p.length;
+		}
+		return out;
+	}
+
+	it("should give head + sealed pieces + the latest tail as the recording, which replays to the drawing", async function() {
+		let
+			random = mulberry32(7),
+			clock = makeClock(),
+			artwork = newBlankArtwork(64, 48),
+			recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+			driver = new Driver(artwork, random, clock),
+			from = 0, head = null, sealed = [], tail = null;
+
+		for (let round = 0; round < 4; round++) {
+			driver.run(40);
+			let
+				p = recorder.getPieces(from);
+
+			if (p.head) {
+				head = p.head;
+			}
+			assert.strictEqual(p.sealed.length, p.count - from);
+			sealed.push(...p.sealed);
+			from = p.count;
+			tail = p.tail;
+		}
+		let
+			bytes = join([head, ...sealed, tail]),
+			player = await replay(bytes);
+
+		assert.deepStrictEqual(player.drift.map(d => d.at), [], "no drift");
+		assertSameDocument(player.artwork, artwork, "pieces");
+
+		// Opened again from it: the next session carries on from where it ends
+		let
+			player2 = new CPRecordingPlayer(bytes, {});
+
+		await player2.prepare();
+		let
+			reopened = player2.finishForEditing(),
+			recorder2 = new CPRecorder(reopened, {clock: clock, previous: bytes});
+
+		assert.strictEqual(recorder2.startKind, START_CONTINUE);
+	});
+
+	it("should replay a copy saved mid-stroke, ending the stroke where it got to", async function() {
+		let
+			clock = makeClock(),
+			artwork = newBlankArtwork(64, 48),
+			recorder = new CPRecorder(artwork, {clock: clock});
+
+		artwork.setBrush(new CPBrushInfo({size: 5, alpha: 255, spacing: 0.15, tip: CPBrushInfo.TIP_ROUND_AA, isAA: true}));
+		artwork.beginStroke(5, 5, 1);
+		for (let i = 1; i <= 10; i++) {
+			clock.advance(16);
+			artwork.continueStroke(5 + i * 3, 5 + i * 2, 1);
+		}
+		let
+			p = recorder.getPieces(0),
+			bytes = join([p.head, ...p.sealed, p.tail]),
+			player = new CPRecordingPlayer(bytes, {});
+
+		await player.prepare();
+		let
+			reopened = player2Pixels(player.finishForEditing());
+
+		artwork.endStroke();
+		assert.strictEqual(firstDifference(reopened, artwork.getActiveLayer().image.data), -1, "the half stroke is there");
+
+		function player2Pixels(a) {
+			return a.getActiveLayer().image.data;
+		}
+	});
+});
