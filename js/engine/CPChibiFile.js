@@ -722,6 +722,8 @@ function hasChibiMagicMarker(array) {
  * @param {CPArtwork} artwork
  * @param {?Object} options
  * @param {boolean} options.forceOldVersion - Mark this as a version 0.0 (ChibiPaint) drawing even if it uses new features
+ * @param {boolean} options.immediate - Serialize every layer without yielding to the browser in between, so the file
+ *                                      is of one moment even while drawing goes on (a copy kept on the device)
  *
  * @returns {Promise.<SerializeResult>}
  */
@@ -763,8 +765,12 @@ export function save(artwork, options) {
             layerWritePromise = layerWritePromise.then(() => new Promise(function(resolve) {
                 deflator.push(serializeLayerChunk(layer), false);
 
-                // Insert a setTimeout between each serialized layer, so we can maintain browser responsiveness
-                setTimeout(resolve, 10);
+                if (options.immediate) {
+                    resolve();
+                } else {
+                    // Insert a setTimeout between each serialized layer, so we can maintain browser responsiveness
+                    setTimeout(resolve, 10);
+                }
             }));
         }
 

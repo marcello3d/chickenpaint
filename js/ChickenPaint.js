@@ -41,6 +41,7 @@ import CPBrushInfo from "./engine/CPBrushInfo.js";
 import CPArtwork from "./engine/CPArtwork.js";
 import CPResourceLoader from "./engine/CPResourceLoader.js";
 import CPResourceSaver from "./engine/CPResourceSaver.js";
+import {save as chiSave} from "./engine/CPChibiFile.js";
 import CPRecorder from "./engine/CPRecorder.js";
 import {SOURCE_CHI, SOURCE_PNG} from "./engine/CPRecordingFormat.js";
 
@@ -314,6 +315,10 @@ function createDrawingTools() {
  * @property {string} [recordingSourceUrl]  - A permanent URL of the file being loaded (loadChibiFileUrl or loadImageUrl),
  *                                          which a recording may refer to instead of storing a copy of the layers.
  * @property {boolean} [allowDownload]      - Allow the drawing to be saved to the user's computer
+ * @property {boolean} [unsavedWarning]     - Warn before the page is left with unsent changes (default true). Off when
+ *                                          the page keeps its own copy of the drawing (getDeviceCopy) and warns itself.
+ * @property {function():(Promise|undefined)} [onSent] - Called once a send has been accepted by the server, before
+ *                                          going on to postUrl (which waits for its promise, two seconds at most)
  *
  * @property {"allow"|"auto"|"force"|"disable"} [fullScreenMode] - Control the behaviour of the full screen option:
  *                                              allow - Don't automatically enter full screen mode, but allow it to be
@@ -1152,6 +1157,26 @@ export default function ChickenPaint(options) {
     };
 
     /**
+     * A copy of the drawing as it is right now, for the page to keep on the device and open again later: the layers
+     * as a .chi (loadChibiFileUrl), the recording so far (loadRecordingUrl; null when not recording or too large) and
+     * the canvas rotation (the rotation option). The layers and the recording are taken at the same moment, so
+     * reopening them continues the recording.
+     *
+     * @returns {Promise.<{chi: Blob, recording: ?Uint8Array, rotation: int}>}
+     */
+    this.getDeviceCopy = function() {
+        let
+            rotation = canvas ? canvas.getRotation90() : 0,
+            recording = recorder ? that.getRecording() : null;
+
+        return chiSave(that.artwork, {immediate: true}).then(result => ({
+            chi: result.bytes,
+            recording: recording,
+            rotation: rotation
+        }));
+    };
+
+    /**
      * Call the callback when the browser is idle (soon, where requestIdleCallback isn't supported).
      *
      * @param {function()} callback
@@ -1229,11 +1254,23 @@ export default function ChickenPaint(options) {
 
         saver.on("savingComplete", function() {
             that.artwork.setHasUnsavedChanges(false);
-            
-            // If we're not allowed to keep editing, we can only go straight to viewing the new post
-            if (!that.isActionSupported("CPContinue") && that.isActionSupported("CPPost")) {
-                that.actionPerformed({action: "CPPost"});
+
+            let
+                sent = Promise.resolve();
+
+            if (options.onSent) {
+                sent = Promise.race([
+                    Promise.resolve().then(options.onSent).catch(e => console.error(e)),
+                    new Promise(resolve => setTimeout(resolve, 2000))
+                ]);
             }
+
+            sent.then(function() {
+                // If we're not allowed to keep editing, we can only go straight to viewing the new post
+                if (!that.isActionSupported("CPContinue") && that.isActionSupported("CPPost")) {
+                    that.actionPerformed({action: "CPPost"});
+                }
+            });
         });
 
         saver.on("savingFailure", function() {
@@ -1450,7 +1487,9 @@ export default function ChickenPaint(options) {
         
         CPWacomTablet.getRef().detectTablet();
         
-        installUnsavedWarning();
+        if (options.unsavedWarning !== false) {
+            installUnsavedWarning();
+        }
 
         that.artwork.on("unsavedChanges", unsavedChanges => {
             // Only bug users to save if they can actually save multiple times per session.
