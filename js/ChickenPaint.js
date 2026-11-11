@@ -349,6 +349,33 @@ function createDrawingTools() {
  *
  * @throws ChickenPaint.UnsupportedBrowserException if the web browser does not support ChickenPaint
  */
+/**
+ * @returns {function(function())} Runs the callback as a new task soon, letting the page handle input and paint in
+ * between (a MessageChannel message: not clamped like nested setTimeouts, nor throttled in a hidden tab)
+ */
+function yielder() {
+    if (typeof MessageChannel === "undefined") {
+        return callback => setTimeout(callback, 0);
+    }
+
+    let
+        channel = new MessageChannel(),
+        pending = null;
+
+    channel.port1.onmessage = function() {
+        let
+            callback = pending;
+
+        pending = null;
+        callback();
+    };
+
+    return callback => {
+        pending = callback;
+        channel.port2.postMessage(0);
+    };
+}
+
 export default function ChickenPaint(options) {
     guessLanguage();
 
@@ -1222,7 +1249,11 @@ export default function ChickenPaint(options) {
         return () => clearTimeout(handle);
     }
 
-    function startRecording(previous) {
+    /**
+     * @param {?Uint8Array} previous - The recording to carry on
+     * @param {CPArtwork} [artwork] - The drawing to record (default this.artwork)
+     */
+    function startRecording(previous, artwork) {
         if (!options.recordDrawing) {
             return;
         }
@@ -1231,7 +1262,7 @@ export default function ChickenPaint(options) {
             return;
         }
         try {
-            recorder = new CPRecorder(that.artwork, {
+            recorder = new CPRecorder(artwork || that.artwork, {
                 previous: previous || null,
                 sourceUrl: options.recordingSourceUrl || "",
                 sourceFormat: options.loadChibiFileUrl ? SOURCE_CHI : SOURCE_PNG,
@@ -1565,15 +1596,35 @@ export default function ChickenPaint(options) {
     preferences.on("toolbarStyle", newStyle => this.emitEvent("toolbarStyleChange", [newStyle]));
 
     if (options.rebuildFromRecording && options.loadRecordingUrl && !options.loadImageUrl && !options.loadChibiFileUrl) {
+        /*
+         * The replay runs in slices of REPLAY_SLICE_MS, so that the page stays responsive however long the drawing
+         * is (with the splash screen's progress bar). The editor doesn't exist until the replay is done, so nothing
+         * can be drawn onto a half-replayed picture.
+         */
+        const
+            REPLAY_SLICE_MS = 12,
+            PROGRESS_EVERY_MS = 100;
+
         let
-            splash = $('<div class="chickenpaint-splash-message">' + _("Loading drawing...") + '</div>').appendTo(uiElem),
+            loader = new EventEmitter(),
+            splashShown = true,
+            closeSplash = function() {
+                if (splashShown) {
+                    splashShown = false;
+                    loader.emitEvent("loadingComplete");
+                }
+            },
             fail = function(e) {
-                splash.remove();
+                closeSplash();
                 console.error(e);
                 if (options.onLoadFailure) {
                     options.onLoadFailure(e);
                 }
-            };
+            },
+            message = _("Loading drawing...");
+
+        new CPSplashScreen(uiElem, loader, options.resourcesRoot);
+        loader.emitEvent("loadingProgress", [0, message]);
 
         fetch(options.loadRecordingUrl)
             .then(res => {
@@ -1585,23 +1636,59 @@ export default function ChickenPaint(options) {
             .then(buffer => {
                 let
                     bytes = new Uint8Array(buffer),
-                    player = new CPRecordingPlayer(bytes, {keyframeMemory: 0});
+                    /*
+                     * No keyframes (no seeking here), no drift checks (nothing to report them to), and the composite
+                     * merged once at the end instead of after each stroke: the same pixels, sooner
+                     */
+                    player = new CPRecordingPlayer(bytes, {keyframeMemory: 0, keyframeInterval: 0, verify: false,
+                        fuseAfterStrokes: false, sliceMs: REPLAY_SLICE_MS}),
+                    yieldToPage = yielder(),
+                    artwork = null;
 
-                return Promise.resolve(player.prepare()).then(() => {
-                    let
+                return Promise.resolve(player.prepare(yieldToPage))
+                    .then(() => new Promise((resolve, reject) => {
+                        let
+                            lastProgress = performance.now(),
+                            slice = function() {
+                                try {
+                                    if (player.advanceTo(Infinity, REPLAY_SLICE_MS)) {
+                                        resolve();
+                                        return;
+                                    }
+                                    if (performance.now() - lastProgress >= PROGRESS_EVERY_MS) {
+                                        lastProgress = performance.now();
+                                        loader.emitEvent("loadingProgress", [player.getProgress(), message]);
+                                    }
+                                    yieldToPage(slice);
+                                } catch (e) {
+                                    reject(e);
+                                }
+                            };
+
+                        slice();
+                    }))
+                    // Each step after the replay in a task of its own too
+                    .then(() => new Promise(resolve => yieldToPage(resolve)))
+                    .then(() => {
                         artwork = player.finishForEditing();
 
-                    if (!artwork) {
-                        throw new Error("the recording has no drawing");
-                    }
-                    splash.remove();
-                    that.artwork = artwork;
-                    startRecording(bytes);
-                    startMainGUI(null, options.rotation || player.getFinalSize().rotation);
-                    if (options.onLoaded) {
-                        options.onLoaded(this);
-                    }
-                });
+                        if (!artwork) {
+                            throw new Error("the recording has no drawing");
+                        }
+                    })
+                    .then(() => artwork.fusionLayersInSlices(REPLAY_SLICE_MS, yieldToPage))
+                    .then(() => new Promise(resolve => yieldToPage(resolve)))
+                    .then(() => startRecording(bytes, artwork))
+                    .then(() => new Promise(resolve => yieldToPage(resolve)))
+                    .then(() => {
+                        // (getArtwork() only once the editor is there)
+                        that.artwork = artwork;
+                        closeSplash();
+                        startMainGUI(null, options.rotation || player.getFinalSize().rotation);
+                        if (options.onLoaded) {
+                            options.onLoaded(this);
+                        }
+                    });
             })
             .catch(fail);
     } else if (options.loadImageUrl || options.loadChibiFileUrl) {

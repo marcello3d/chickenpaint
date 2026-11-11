@@ -914,6 +914,74 @@ export default function CPArtwork(_width, _height) {
         return fusion;
     };
 
+    /**
+     * Do part of fusionLayers(): merge the rows of the visible layers above the given one (so that a big merge can be
+     * spread over several tasks). fusionLayers() then merges the rest.
+     *
+     * @param {number} above
+     * @returns {CPColorBmp} The fusion (up to date above that row)
+     */
+    this.fusionLayersAbove = function(above) {
+        prepareForFusion();
+
+        fusion = blendTree.blendTree(above).image;
+
+        return fusion;
+    };
+
+    /**
+     * fusionLayers() a band of rows at a time, in tasks of about sliceMs (for a merge too big for one task: of a whole
+     * drawing just rebuilt from its recording, say).
+     *
+     * @param {number} sliceMs
+     * @param {function(function())} yieldToPage - Called with a function to call back once the page has had a turn
+     * @returns {Promise.<CPColorBmp>} The fusion
+     */
+    this.fusionLayersInSlices = function(sliceMs, yieldToPage) {
+        return new Promise((resolve, reject) => {
+            let
+                y = 0,
+                rows = 16,
+                slice = () => {
+                    try {
+                        let
+                            deadline = performance.now() + sliceMs;
+
+                        while (y < this.height) {
+                            let
+                                started = performance.now();
+
+                            y = Math.min(this.height, y + rows);
+                            this.fusionLayersAbove(y);
+
+                            let
+                                now = performance.now(),
+                                took = now - started;
+
+                            // About 2 to 4 ms a band
+                            if (took < 2) {
+                                rows *= 2;
+                            } else if (took > 4 && rows > 1) {
+                                rows = rows >> 1;
+                            }
+                            if (now + took > deadline) {
+                                break;
+                            }
+                        }
+                        if (y < this.height) {
+                            yieldToPage(slice);
+                        } else {
+                            resolve(this.fusionLayers());
+                        }
+                    } catch (e) {
+                        reject(e);
+                    }
+                };
+
+            slice();
+        });
+    };
+
 	/**
      * Old ChibiPaint used a blending operator with a slightly different formula than us for blending onto opaque
      * canvases. We can fix this in two ways:

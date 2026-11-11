@@ -541,8 +541,9 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 	 * Blend the given tree node and return the tree node that contains the resulting blend, or null if the tree is empty.
 	 * 
 	 * @param {?CPBlendNode} treeNode
+	 * @param {number} [above] - Only blend the rows above this one (the rest stays dirty, for a later call)
 	 */
-	function blendTreeInternal(treeNode) {
+	function blendTreeInternal(treeNode, above) {
 		if (!treeNode || !treeNode.isGroup) {
 			// Tree is empty, or it's just a layer and doesn't need further blending
 			return treeNode;
@@ -558,6 +559,15 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 			 * so invalidating the parent must invalidate the passthrough child.
 			 */
 			blendArea.union(treeNode.parent.dirtyRect);
+		}
+
+		if (above !== undefined && blendArea.bottom > above) {
+			/*
+			 * Blending works pixel by pixel, and gives the same pixels whatever shape the area being redrawn has, so the
+			 * dirty area can be blended a band of rows at a time.
+			 */
+			blendArea = blendArea.clone();
+			blendArea.bottom = Math.max(blendArea.top, above);
 		}
 
 		if (blendArea.isEmpty()) {
@@ -581,7 +591,7 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 		for (let i = 0; i < treeNode.layers.length; i++) {
             let
                 child = treeNode.layers[i],
-                childNode = blendTreeInternal(child);
+                childNode = blendTreeInternal(child, above);
 
             if (groupIsEmpty) {
                 // If the fusion is currently empty then there's nothing to blend, replace the fusion with the contents of the bottom layer instead
@@ -635,22 +645,28 @@ export default function CPBlendTree(drawingRootGroup, width, height, requireSimp
 			}
 		}
 
-		treeNode.dirtyRect.makeEmpty();
+		if (blendArea === treeNode.dirtyRect) {
+			treeNode.dirtyRect.makeEmpty();
+		} else {
+			// What's left below the band
+			treeNode.dirtyRect.top = blendArea.bottom;
+		}
 
 		return treeNode;
 	}
 	
 	/**
 	 * Blend the layers in the tree and return the resulting image.
-	 * 
+	 *
+	 * @param {number} [above] - Only blend the rows above this one (the rest is blended by a later call)
 	 * @returns An object with blendMode, alpha and image (CPColorBmp) properties.
 	 */
-	this.blendTree = function() {
+	this.blendTree = function(above) {
 		if (DEBUG) {
 			console.log("Fusing layers...");
 		}
 
-		return blendTreeInternal(drawTree);
+		return blendTreeInternal(drawTree, above);
 	};
 
 }

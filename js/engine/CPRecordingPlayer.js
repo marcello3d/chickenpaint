@@ -105,6 +105,10 @@ function decodeGreyPNG(png) {
  * @param {number} [options.keyframeMemory] - Bytes the keyframes may use (default 128MB). Over that, every other one is
  *                                            dropped
  * @param {boolean} [options.fuseAfterStrokes] - Update the composite after each stroke (default true)
+ * @param {boolean} [options.verify] - Check the replay against the hashes stored in the recording (default true). Off,
+ *                                     only the hashes that decide what to replay from are computed (whether a session
+ *                                     can carry on from the replay, or starts from its snapshot): drift goes
+ *                                     unreported, the pixels are the same
  *
  * @constructor
  */
@@ -153,6 +157,7 @@ export default function CPRecordingPlayer(bytes, options) {
         // Browsers pass a budget that suits the device (see ChickenPaintPlayer)
         keyframeMemory = options.keyframeMemory === undefined ? 128 * 1024 * 1024 : options.keyframeMemory,
         fuseAfterStrokes = options.fuseAfterStrokes !== false,
+        verify = options.verify !== false,
         keyframes = [],
         keyframeBytes = 0,
         workSinceKeyframe = 0,
@@ -222,57 +227,100 @@ export default function CPRecordingPlayer(bytes, options) {
      * Lay out the playback timeline (events are decoded later, as the replay reaches them) and fetch any referenced
      * files. Must complete before replaying.
      *
+     * @param {function(function())} [yieldToPage] - To lay it out in slices (of about options.sliceMs, default 12 ms):
+     *                                               called with a function to call back once the page has had a turn
      * @returns {Promise}
      */
-    this.prepare = function() {
+    this.prepare = function(yieldToPage) {
         let
             time = 0,
             loads = [],
-            times = [];
+            times = [],
+            // One step per session start and per chunk of events
+            work = [],
+            sliceMs = options.sliceMs || 12;
 
         stepCount = 0;
         segments = [];
 
         file.sessions.forEach((session, sessionIndex) => {
-            if (sessionIndex > 0) {
-                time += sessionGap;
-            }
-
-            segments.push({first: stepCount, count: 1, session: session, payload: null, inflated: null, events: null});
-            times.push(Float64Array.of(time));
-            stepCount++;
-
-            for (let payload of session.eventChunks) {
-                let
-                    inflated = inflateEvents(payload),
-                    dts = decodeEventTimes(inflated),
-                    chunkTimes = new Float64Array(dts.length);
-
-                for (let i = 0; i < dts.length; i++) {
-                    time += Math.min(dts[i], maxIdle);
-                    chunkTimes[i] = time;
+            work.push(() => {
+                if (sessionIndex > 0) {
+                    time += sessionGap;
                 }
 
-                segments.push({first: stepCount, count: dts.length, session: session, payload: payload, inflated: inflated, events: null});
-                times.push(chunkTimes);
-                stepCount += dts.length;
+                segments.push({first: stepCount, count: 1, session: session, payload: null, inflated: null, events: null});
+                times.push(Float64Array.of(time));
+                stepCount++;
+            });
+
+            for (let payload of session.eventChunks) {
+                work.push(() => {
+                    let
+                        inflated = inflateEvents(payload),
+                        dts = decodeEventTimes(inflated),
+                        chunkTimes = new Float64Array(dts.length);
+
+                    for (let i = 0; i < dts.length; i++) {
+                        time += Math.min(dts[i], maxIdle);
+                        chunkTimes[i] = time;
+                    }
+
+                    segments.push({first: stepCount, count: dts.length, session: session, payload: payload, inflated: inflated, events: null});
+                    times.push(chunkTimes);
+                    stepCount += dts.length;
+                });
             }
 
-            if (session.snapshot) {
-                session.bitmaps = decodeSnapshot(session.snapshot);
-            } else if (session.start.kind === START_REFERENCE && session.start.sourceUrl) {
-                loads.push(loadReference(session));
-            }
+            work.push(() => {
+                if (session.snapshot) {
+                    session.bitmaps = decodeSnapshot(session.snapshot);
+                } else if (session.start.kind === START_REFERENCE && session.start.sourceUrl) {
+                    loads.push(loadReference(session));
+                }
+            });
         });
 
-        stepTimes = new Float64Array(stepCount);
-        for (let i = 0, offset = 0; i < times.length; offset += times[i].length, i++) {
-            stepTimes.set(times[i], offset);
+        let
+            finish = () => {
+                stepTimes = new Float64Array(stepCount);
+                for (let i = 0, offset = 0; i < times.length; offset += times[i].length, i++) {
+                    stepTimes.set(times[i], offset);
+                }
+
+                this.duration = time;
+
+                return Promise.all(loads).then(() => this);
+            };
+
+        if (!yieldToPage) {
+            work.forEach(step => step());
+            return finish();
         }
 
-        this.duration = time;
+        return new Promise((resolve, reject) => {
+            let
+                next = 0,
+                slice = () => {
+                    try {
+                        let
+                            deadline = performance.now() + sliceMs;
 
-        return Promise.all(loads).then(() => this);
+                        while (next < work.length && performance.now() < deadline) {
+                            work[next++]();
+                        }
+                        if (next < work.length) {
+                            yieldToPage(slice);
+                        } else {
+                            resolve();
+                        }
+                    } catch (e) {
+                        reject(e);
+                    }
+                };
+
+            slice();
+        }).then(finish);
     };
 
     const
@@ -447,13 +495,14 @@ export default function CPRecordingPlayer(bytes, options) {
         }
 
         let
-            ok = matches(artwork);
+            // Without verify, the hashes are only worth computing when there's a snapshot to fall back on
+            ok = verify || session.bitmaps ? matches(artwork) : !!artwork;
 
         if (!ok && session.bitmaps) {
             // Start from the snapshot, or the file the editor opened
             artwork = newArtwork(start.width, start.height);
             buildLayersFromTable(artwork, start, session.bitmaps, CPGreyBmp);
-            ok = matches(artwork);
+            ok = !verify || matches(artwork);
         }
 
         if (!artwork) {
@@ -523,6 +572,9 @@ export default function CPRecordingPlayer(bytes, options) {
         let
             end = session.end;
 
+        if (!verify) {
+            return;
+        }
         if (!end || end.truncated) {
             // The recording stops before the end of the session, so we can't have reached the saved drawing
             reportDrift({session: session.start.index, time: that.currentTime, at: end ? "truncated" : "incomplete"});
@@ -730,7 +782,7 @@ export default function CPRecordingPlayer(bytes, options) {
                 break;
 
             case OP.CHECKPOINT:
-                if (hashComposite(artwork) !== event.hash) {
+                if (verify && hashComposite(artwork) !== event.hash) {
                     reportDrift({session: currentSession.start.index, time: that.currentTime, at: "checkpoint"});
                 }
                 break;
@@ -1182,7 +1234,7 @@ export default function CPRecordingPlayer(bytes, options) {
      */
     this.advanceTo = function(time, budget) {
         let
-            deadline = budget === undefined || budget === Infinity ? Infinity : Date.now() + budget;
+            deadline = budget === undefined || budget === Infinity ? Infinity : performance.now() + budget;
 
         while (position < stepCount && stepTimes[position] <= time) {
             let
@@ -1199,7 +1251,7 @@ export default function CPRecordingPlayer(bytes, options) {
                 }
             }
 
-            if (Date.now() > deadline) {
+            if (performance.now() > deadline) {
                 return position >= stepCount || stepTimes[position] > time;
             }
         }
@@ -1236,6 +1288,13 @@ export default function CPRecordingPlayer(bytes, options) {
         setArtwork(null);
 
         return artwork;
+    };
+
+    /**
+     * @returns {number} The fraction of the steps replayed so far (0 to 1)
+     */
+    this.getProgress = function() {
+        return stepCount ? position / stepCount : 1;
     };
 
     /**

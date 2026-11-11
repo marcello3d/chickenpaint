@@ -32,6 +32,7 @@ import CPClip from "../js/engine/CPClip.js";
 import CPBlend from "../js/engine/CPBlend.js";
 import CPRecorder from "../js/engine/CPRecorder.js";
 import CPRecordingPlayer from "../js/engine/CPRecordingPlayer.js";
+import CPBrushManager from "../js/engine/CPBrushManager.js";
 import CPPlaybackLoop from "../js/player/CPPlaybackLoop.js";
 import {save as chiSave, load as chiLoad} from "../js/engine/CPChibiFile.js";
 import {
@@ -680,6 +681,37 @@ describe("CPBlendTree", function() {
 
 			for (let step = 1; step <= 200; step++) {
 				driver.step();
+
+				let
+					diff = firstDifference(artwork.fusionLayers().data, freshComposite(artwork).data);
+
+				assert.strictEqual(diff, -1, "seed " + seed + " step " + step + " (" + driver.ops.slice(-3).join(", ") + ")");
+			}
+		}
+	});
+
+	it("should give the same composite when it's merged a band of rows at a time (random editing)", function() {
+		for (let seed = 1; seed <= 8; seed++) {
+			let
+				random = mulberry32(seed * 7919),
+				clock = makeClock(),
+				artwork = newBlankArtwork(30 + seed * 5, 40 + seed),
+				driver = new Driver(artwork, random, clock);
+
+			for (let step = 1; step <= 200; step++) {
+				driver.step();
+				if (random() < 0.5) {
+					// Leave a few edits unmerged now and then, so that the dirty areas grow
+					continue;
+				}
+
+				let
+					y = 0;
+
+				while (y < artwork.height) {
+					y += 1 + Math.floor(random() * 12);
+					artwork.fusionLayersAbove(y);
+				}
 
 				let
 					diff = firstDifference(artwork.fusionLayers().data, freshComposite(artwork).data);
@@ -1486,6 +1518,135 @@ describe("CPRecorder.getPieces (a recording kept piece by piece)", function() {
 
 		function player2Pixels(a) {
 			return a.getActiveLayer().image.data;
+		}
+	});
+});
+
+/**
+ * Rebuild a drawing from its recording as ChickenPaint's rebuildFromRecording does: no keyframes, no drift checks, the
+ * timeline laid out and the events replayed in slices, then finishForEditing().
+ */
+async function rebuildForEditing(bytes, sliceMs) {
+	let
+		player = new CPRecordingPlayer(bytes, {keyframeMemory: 0, keyframeInterval: 0, verify: false, fuseAfterStrokes: false,
+			sliceMs: sliceMs}),
+		slices = 0;
+
+	await player.prepare(callback => setImmediate(callback));
+	while (!player.advanceTo(Infinity, sliceMs)) {
+		slices++;
+		assert(player.getProgress() > 0 && player.getProgress() < 1);
+	}
+	assert.strictEqual(player.getProgress(), 1);
+
+	let
+		artwork = player.finishForEditing();
+
+	await artwork.fusionLayersInSlices(sliceMs, callback => setImmediate(callback));
+	return {artwork, slices};
+}
+
+describe("Rebuilding a drawing from its recording to edit it (rebuildFromRecording)", function() {
+	this.timeout(600000);
+
+	for (let seed = 1; seed <= Math.min(FUZZ_SEEDS, 40); seed++) {
+		it("should rebuild random editing in slices, without drift checks, bit-exactly (seed " + seed + ")", async function() {
+			let
+				random = mulberry32(seed),
+				clock = makeClock(),
+				artwork = newBlankArtwork(64 + (seed % 3) * 7, 48 + (seed % 2) * 9),
+				recorder = new CPRecorder(artwork, {clock: clock, checkpointInterval: 20}),
+				driver = new Driver(artwork, random, clock);
+
+			driver.run(150);
+
+			let
+				bytes = recorder.getRecording(),
+				// Tiny slices, so that most steps end one
+				rebuilt = await rebuildForEditing(bytes, 0.01),
+				checked = (await replay(bytes)).finishForEditing();
+
+			assert(rebuilt.slices > 1);
+			assertSameDocument(rebuilt.artwork, artwork, "seed " + seed);
+			// The composite, merged in bands of rows at the end, as the one kept up to date while drawing
+			assert.deepStrictEqual(rebuilt.artwork.fusionLayers().data, artwork.fusionLayers().data, "seed " + seed + " composite");
+			assertSameDocument(rebuilt.artwork, checked, "seed " + seed + " (with drift checks)");
+			assertSameUndoHistory(rebuilt.artwork, artwork, "seed " + seed);
+		});
+	}
+
+	it("should still start a session from its snapshot when the drawing doesn't match", async function() {
+		let
+			random = mulberry32(31),
+			clock = makeClock(),
+			artwork = newBlankArtwork(50, 40),
+			recorder = new CPRecorder(artwork, {clock: clock}),
+			driver = new Driver(artwork, random, clock);
+
+		driver.run(60);
+		let
+			bytes = recorder.getRecording({rotation: 0});
+
+		// Reopened, but changed outside the recording before session 2 starts
+		artwork = await chiRoundTrip(artwork);
+		layerList(artwork).filter(layer => layer instanceof CPImageLayer)[0].image.data[5] ^= 0x55;
+		recorder = new CPRecorder(artwork, {previous: bytes, clock: clock});
+		assert.strictEqual(recorder.startKind, START_SNAPSHOT);
+		driver = new Driver(artwork, random, clock);
+		driver.run(60);
+
+		let
+			rebuilt = await rebuildForEditing(recorder.getRecording(), 1);
+
+		assertSameDocument(rebuilt.artwork, artwork, "snapshot session");
+	});
+
+	it("should texture a brush dab as the original per-pixel formula did", function() {
+		let
+			random = mulberry32(5),
+			manager = new CPBrushManager(),
+			texture = new CPGreyBmp(13, 7, 8);
+
+		for (let i = 0; i < texture.data.length; i++) {
+			texture.data[i] = i < 256 ? i : Math.floor(random() * 256);
+		}
+
+		for (let i = 0; i < 300; i++) {
+			let
+				brush = new CPBrushInfo({
+					size: 1 + Math.floor(random() * 60), alpha: 255, tip: Math.floor(random() * 5), isAA: random() < 0.7,
+					squeeze: random() < 0.3 ? random() * 0.9 : 0, angle: random() * 6,
+					texture: [0, 1, 0.5, random(), 1e-3, 0.999][i % 6]
+				}),
+				x = random() * 300 - 50,
+				y = random() * 300 - 50;
+
+			brush.applyPressure(0.2 + random() * 0.8);
+
+			manager.setTexture(null);
+			let
+				plain = manager.getDab(x, y, brush),
+				expected = plain.brush.slice(0, plain.width * plain.height),
+				amount = Math.floor(brush.texture * 255);
+
+			// The original formula
+			for (let dy = 0; dy < plain.height; dy++) {
+				for (let dx = 0; dx < plain.width; dx++) {
+					let
+						tx = ((plain.x + dx) % texture.width + texture.width) % texture.width,
+						ty = ((plain.y + dy) % texture.height + texture.height) % texture.height,
+						j = dy * plain.width + dx;
+
+					expected[j] = ~~(expected[j] * ((texture.data[ty * texture.width + tx] * amount / 255) ^ 0xff) / 255);
+				}
+			}
+
+			manager.setTexture(texture);
+			let
+				textured = manager.getDab(x, y, brush);
+
+			assert.deepStrictEqual([textured.x, textured.y, textured.width, textured.height], [plain.x, plain.y, plain.width, plain.height]);
+			assert.deepStrictEqual(textured.brush.subarray(0, textured.width * textured.height), expected, "dab " + i);
 		}
 	});
 });

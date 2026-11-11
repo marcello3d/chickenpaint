@@ -24,7 +24,12 @@ import CPBrushInfo from "./CPBrushInfo.js";
 import {sin, cos} from "../util/CPMath.js";
 
 const
-    MAX_SQUEEZE = 10;
+    MAX_SQUEEZE = 10,
+
+    BUILT_BRUSHES_KEPT = 64,
+    BUILT_BRUSHES_BYTES = 4 * 1024 * 1024,
+    BUILT_BRUSH_TIPS = new Set([CPBrushInfo.TIP_ROUND_AIRBRUSH, CPBrushInfo.TIP_ROUND_AA, CPBrushInfo.TIP_ROUND_PIXEL,
+        CPBrushInfo.TIP_SQUARE_AA, CPBrushInfo.TIP_SQUARE_PIXEL]);
 
 /**
  *
@@ -276,9 +281,18 @@ export default function CPBrushManager() {
         brush = new Uint8Array(BRUSH_MAX_DIM * BRUSH_MAX_DIM),
         brushAA = new Uint8Array(BRUSH_AA_MAX_DIM * BRUSH_AA_MAX_DIM),
         brushAARows = [new Float32Array(BRUSH_AA_MAX_DIM), new Float32Array(BRUSH_AA_MAX_DIM)],
+        textureFactors = new Int32Array(256),
 
         cacheBrush = null,
         cacheSize, cacheSqueeze, cacheAngle, cacheTip,
+
+        /*
+         * Copies of recently built brushes (the pressure changes the size from one dab to the next, and sizes over 16
+         * are whole numbers, so the same few come back again and again), by "tip|size|squeeze|angle", the least
+         * recently used first
+         */
+        builtBrushes = new Map(),
+        builtBrushesBytes = 0,
 
         that = this;
 
@@ -367,7 +381,15 @@ export default function CPBrushManager() {
             return cacheBrush;
         }
         
-        switch (brushInfo.tip) {
+        let
+            key = brushInfo.tip + "|" + brushInfo.curSize + "|" + brushInfo.curSqueeze + "|" + brushInfo.curAngle,
+            built = builtBrushes.get(key);
+
+        if (built) {
+            builtBrushes.delete(key);
+            builtBrushes.set(key, built);
+            brush.set(built);
+        } else switch (brushInfo.tip) {
             case CPBrushInfo.TIP_ROUND_AIRBRUSH:
                 buildBrushSoft(brush, brushInfo);
             break;
@@ -383,6 +405,22 @@ export default function CPBrushManager() {
             case CPBrushInfo.TIP_SQUARE_PIXEL:
                 buildBrushSquare(brush, brushInfo);
             break;
+        }
+
+        if (!built && BUILT_BRUSH_TIPS.has(brushInfo.tip)) {
+            let
+                intSize = Math.ceil(brushInfo.curSize);
+
+            built = brush.slice(0, intSize * intSize);
+            builtBrushes.set(key, built);
+            builtBrushesBytes += built.length;
+            while (builtBrushes.size > BUILT_BRUSHES_KEPT || builtBrushesBytes > BUILT_BRUSHES_BYTES) {
+                let
+                    oldest = builtBrushes.keys().next().value;
+
+                builtBrushesBytes -= builtBrushes.get(oldest).length;
+                builtBrushes.delete(oldest);
+            }
         }
 
         cacheBrush = brush;
@@ -408,7 +446,18 @@ export default function CPBrushManager() {
             textureY = dab.y % texture.height,
             
             brushPos = 0,
-            texturePos, textureEOL;
+            texturePos, textureEOL,
+
+            brushData = dab.brush,
+            textureData = texture.data,
+            // The texture's factor for each texture value (as the per-pixel formula had it)
+            factors = textureFactors,
+            // The factors are then 0 to 255, so a product fits the shortcut below
+            amountInRange = amount >= 0 && amount <= 255;
+
+        for (let i = 0; i < 256; i++) {
+            factors[i] = (i * amount / 255) ^ 0xff;
+        }
 
         if (textureX < 0) {
             textureX += texture.width;
@@ -424,10 +473,10 @@ export default function CPBrushManager() {
             
             for (let x = 0; x < dab.width; x++) {
                 let
-                    brushValue = dab.brush[brushPos],
-                    textureValue = texture.data[texturePos];
-                
-                dab.brush[brushPos] = ~~(brushValue * ((textureValue * amount / 255) ^ 0xff) / 255);
+                    product = brushData[brushPos] * factors[textureData[texturePos]];
+
+                // ~~(product / 255), for a product in [0, 255 * 255] without the division
+                brushData[brushPos] = amountInRange ? (product + 1 + (product >> 8)) >> 8 : ~~(product / 255);
                 
                 brushPos++;
                 
@@ -498,7 +547,8 @@ export default function CPBrushManager() {
             // we need a brush bitmap that can be modified everytime
             // the one in "brush" can be kept in cache so if we are using it, make a copy
             if (dab.brush == brush) {
-                brushAA.set(brush);
+                // (Only the dab's part: the brush is width x height, row after row, at the start of the array)
+                brushAA.set(brush.subarray(0, dab.width * dab.height));
                 dab.brush = brushAA;
             }
             applyTexture(dab, brushInfo.texture);

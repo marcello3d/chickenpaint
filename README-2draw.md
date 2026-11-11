@@ -27,7 +27,11 @@ icon SVGs change (or use `chickenpaint.Dockerfile`).
 - For 2draw's copy of a drawing on the device, kept as its recording, append-only: `getRecordingPieces(from)` (the
   fixed head, the event chunks sealed since, the current tail; `CPRecorder.getPieces`) and `rebuildFromRecording`
   (open a drawing by replaying its recording, then carry the recording on; the player ends a stroke a session left
-  under way, as the editor does when it reopens one). As a fallback for a recording that stopped early:
+  under way, as the editor does when it reopens one; the replay runs in slices of about 12 ms behind the splash
+  screen's progress bar, without keyframes or drift checks (`verify: false`), and the editor appears once it's done,
+  so the page never freezes and nothing is drawn onto a half-replayed picture;
+  `scripts/compare-replay.mjs <old> <new> [files]` checks that two engine checkouts rebuild recordings identically).
+  As a fallback for a recording that stopped early:
   `getDeviceCopy()` (the layers as a .chi, taken without yielding, plus
   the recording so far and the rotation), the `unsavedWarning: false` option (the page warns itself) and `onSent`
   (awaited, two seconds at most, before going on to `postUrl`).

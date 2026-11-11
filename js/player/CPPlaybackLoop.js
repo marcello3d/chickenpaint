@@ -320,7 +320,8 @@ export default function CPPlaybackLoop(canvas, options) {
         });
         player.onArtworkChange = onArtworkChange;
 
-        return player.prepare().then(() => {
+        // In slices, so that a long recording doesn't hold up the page (or the worker's messages)
+        return player.prepare(callback => setTimeout(callback, 0)).then(() => {
             let
                 size = player.getFinalSize();
 
