@@ -73,6 +73,33 @@ const
  *
  * @constructor
  */
+/**
+ * @returns {function(function())} Runs the callback as a new task soon (a MessageChannel message, not clamped like
+ * nested setTimeouts)
+ */
+function pageYielder() {
+    if (typeof MessageChannel === "undefined") {
+        return callback => setTimeout(callback, 0);
+    }
+
+    let
+        channel = new MessageChannel(),
+        pending = null;
+
+    channel.port1.onmessage = () => {
+        let
+            callback = pending;
+
+        pending = null;
+        callback();
+    };
+
+    return callback => {
+        pending = callback;
+        channel.port2.postMessage(0);
+    };
+}
+
 export default function CPPlaybackLoop(canvas, options) {
     const
         that = this,
@@ -320,8 +347,8 @@ export default function CPPlaybackLoop(canvas, options) {
         });
         player.onArtworkChange = onArtworkChange;
 
-        // In slices, so that a long recording doesn't hold up the page (or the worker's messages)
-        return player.prepare(callback => setTimeout(callback, 0)).then(() => {
+        // On the page, in slices, so that a long recording doesn't hold it up (a worker has nothing to wait for it)
+        return player.prepare(typeof document !== "undefined" ? pageYielder() : undefined).then(() => {
             let
                 size = player.getFinalSize();
 
